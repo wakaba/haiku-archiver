@@ -1,0 +1,13 @@
+AnyEvent::Socket
+Carp~1.50
+Cwd~3.75
+Digest::SHA~6.02
+Encode~2.98
+File::Path~2.16
+MIME::Base64~3.15
+Math::BigInt~1.999816
+Net::SSLeay~1.85
+Path::Tiny~0.108
+Scalar::Util~1.50
+Socket~2.027
+Time::HiRes~1.9758
