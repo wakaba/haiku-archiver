@@ -114,8 +114,20 @@ sub validate_name ($) {
   } # save_indexes
 }
 
-sub save_entries ($$) {
-  my ($type, $items) = @_;
+sub write_entry ($$$$) {
+  my ($user, $eid, $type, $data) = @_;
+  my $path = $DataPath->child ('entries')
+      ->child ($user)
+      ->child ($eid . '.' . $type . '.json');
+  my $file = Promised::File->new_from_path ($path);
+  return $file->is_file->then (sub {
+    return if $_[0]; # skip
+    return $file->write_byte_string (perl2json_bytes $data);
+  });
+} # write_entry
+
+sub save_h_entries ($) {
+  my ($items) = @_;
   return promised_for {
     my $item = shift;
 
@@ -166,18 +178,61 @@ sub save_entries ($$) {
         user => $item->{user}->{screen_name},
         eid => $item->{id},
         timestamp => $ts->to_unix_number;
-    
-    my $path = $DataPath->child ('entries')
-        ->child ($item->{user}->{screen_name})
-        ->child ($item->{id} . '.' . $type . '.json');
-    my $file = Promised::File->new_from_path ($path);
 
-    return $file->is_file->then (sub {
-      return if $_[0]; # skip
-      return $file->write_byte_string (perl2json_bytes $item);
-    });
+    return write_entry $item->{user}->{screen_name}, $item->{id}, 'h', $item;
   } $items;
-} # save_entries
+} # save_h_entries
+
+sub save_n_entries ($) {
+  my ($items) = @_;
+  return promised_for {
+    my $item = shift;
+    return unless $item->{data_category} == 62;
+    
+    validate_name $item->{author}->{url_name};
+    validate_name $item->{eid};
+    validate_name $item->{tld};
+
+    index_user
+        url_name => $item->{author}->{url_name};
+    index_target
+        url_name => $item->{target}->{url_name},
+        word => $item->{target}->{display_name};
+    index_target
+        url_name => $item->{source_target}->{url_name},
+        word => $item->{source_target}->{display_name};
+
+    if (defined $item->{reply_to_author}) {
+      index_user
+          url_name => $item->{reply_to_author}->{url_name};
+    }
+    if (length $item->{reply_to_eid}) {
+      index_reply_entry
+          parent_user => $item->{author}->{url_name},
+          parent_eid => $item->{eid},
+          child_user => $item->{reply_to_author}->{url_name},
+          child_eid => $item->{reply_to_eid},
+          timestamp => $item->{created_on};
+    }
+
+    index_thread_entry
+        tld => $item->{tld},
+        type => 'user',
+        name => $item->{author}->{url_name},
+        user => $item->{author}->{url_name},
+        eid => $item->{eid},
+        timestamp => $item->{created_on};
+    index_thread_entry
+        tld => $item->{tld},
+        type => 'target',
+        name => $item->{target}->{url_name},
+        user => $item->{author}->{url_name},
+        eid => $item->{eid},
+        timestamp => $item->{created_on};
+
+    return write_entry $item->{author}->{url_name}, $item->{eid}, 'n', $item;
+  } $items;
+} # save_n_entries
 
 sub get_h ($$%) {
   my ($type, $tld, %args) = @_;
@@ -210,7 +265,7 @@ sub get_h ($$%) {
 
         $_->{tld} = $tld for @$json;
         return Promise->all ([
-          save_entries ('h', $json),
+          save_h_entries ($json),
         ])->then (sub {
           return 'done' if $page++ > 100;
           print STDERR "*";
@@ -225,6 +280,53 @@ sub get_h ($$%) {
     return $client->close;
   }));
 } # get_h
+
+sub get_n ($%) {
+  my ($type, %args) = @_;
+  my $client = Web::Transport::BasicClient->new_from_url
+      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  die "Bad type |$type|" unless $type eq 'user';
+  my $req = {
+    path => [$args{name}, 'index.json'],
+    params => {
+      location => q<http://h2.hatena.ne.jp/>,
+      dccol => 'ugouser',
+      per_page => 200,
+    },
+  };
+  my $n = 0;
+  return ((promised_until {
+    return 'done' if $n++ > 10;
+    return with_retry (sub {
+      return $client->request (%$req)->then (sub {
+        my $res = $_[0];
+        die $res unless $res->status == 200;
+        return json_bytes2perl $res->body_bytes;
+      });
+    }, $args{signal})->then (sub {
+      my $json = $_[0];
+      return 'done' if $args{signal}->aborted and not defined $json;
+      if (ref $json eq 'HASH') {
+        return 'done' unless @{$json->{items}};
+
+        return Promise->all ([
+          save_n_entries ($json->{items}),
+        ])->then (sub {
+          print STDERR "*";
+          return 'done' if $args{signal}->aborted;
+          $req = {
+            url => Web::URL->parse_string ($json->{older_url}),
+          };
+          return not 'done';
+        });
+      } else {
+        die "Server returns an unexpected response";
+      }
+    });
+  })->finally (sub {
+    return $client->close;
+  }));
+} # get_n
 
 sub run ($) {
   my $code = shift;
@@ -249,12 +351,15 @@ sub main (@) {
     my $name = shift // '';
     die "Usage: har user name" unless length $name;
     run (sub {
-      return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
-        return save_indexes;
-      })->then (sub {
-        return get_h ('user', 'com', name => $name, signal => $signal);
-      });
+      return get_n ('user', name => $name, signal => $signal);
     });
+    #run (sub {
+    #  return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
+    #    return save_indexes;
+    #  })->then (sub {
+    #    return get_h ('user', 'com', name => $name, signal => $signal);
+    #  });
+    #});
   } elsif ($command eq 'public') {
     run (sub {
       return get_h ('public', 'jp', signal => $signal);
@@ -262,6 +367,7 @@ sub main (@) {
   } else {
     die "Usage: har command\n";
   }
+  undef $ac;
 } # main
 
 main (@ARGV);
