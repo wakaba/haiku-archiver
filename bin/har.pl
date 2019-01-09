@@ -40,8 +40,8 @@ sub validate_name ($) {
   die "Unexpected name |$name|" unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
 } # validate_name
 
+my $Indexes = {};
 {
-  my $Indexes = {};
   
   sub index_user (%) {
     my %args = @_;
@@ -294,9 +294,14 @@ sub get_n ($%) {
       per_page => 200,
     },
   };
+  my $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  if ($state->{no_more_older}) {
+    return;
+  } elsif (defined $state->{older_url}) {
+    $req = {url => Web::URL->parse_string ($state->{older_url})};
+  }
   my $n = 0;
   return ((promised_until {
-    return 'done' if $n++ > 10;
     return with_retry (sub {
       return $client->request (%$req)->then (sub {
         my $res = $_[0];
@@ -307,7 +312,12 @@ sub get_n ($%) {
       my $json = $_[0];
       return 'done' if $args{signal}->aborted and not defined $json;
       if (ref $json eq 'HASH') {
-        return 'done' unless @{$json->{items}};
+        $state->{newer_url} //= $json->{newer_url};
+        unless (@{$json->{items}}) {
+          $state->{no_more_older} = 1;
+          delete $state->{older_url};
+          return 'done';
+        }
 
         return Promise->all ([
           save_n_entries ($json->{items}),
@@ -317,6 +327,11 @@ sub get_n ($%) {
           $req = {
             url => Web::URL->parse_string ($json->{older_url}),
           };
+          if ($n++ > 10) {
+            $state->{older_url} = $req->{url}->stringify;
+            delete $state->{no_more_older};
+            return 'done';
+          }
           return not 'done';
         });
       } else {
@@ -327,6 +342,46 @@ sub get_n ($%) {
     return $client->close;
   }));
 } # get_n
+
+sub get_n_newer ($%) {
+  my ($type, %args) = @_;
+  my $client = Web::Transport::BasicClient->new_from_url
+      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  die "Bad type |$type|" unless $type eq 'user';
+  my $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  return unless defined $state->{newer_url};
+  my $req = {url => Web::URL->parse_string ($state->{newer_url})};
+  return ((promised_until {
+    return with_retry (sub {
+      return $client->request (%$req)->then (sub {
+        my $res = $_[0];
+        die $res unless $res->status == 200;
+        return json_bytes2perl $res->body_bytes;
+      });
+    }, $args{signal})->then (sub {
+      my $json = $_[0];
+      return 'done' if $args{signal}->aborted and not defined $json;
+      if (ref $json eq 'HASH') {
+        unless (@{$json->{items}}) {
+          return 'done';
+        }
+
+        return Promise->all ([
+          save_n_entries ($json->{items}),
+        ])->then (sub {
+          print STDERR "*";
+          return 'done' if $args{signal}->aborted;
+          $state->{newer_url} = $json->{newer_url};
+          return 'done';
+        });
+      } else {
+        die "Server returns an unexpected response";
+      }
+    });
+  })->finally (sub {
+    return $client->close;
+  }));
+} # get_n_newer
 
 sub run ($) {
   my $code = shift;
@@ -351,7 +406,11 @@ sub main (@) {
     my $name = shift // '';
     die "Usage: har user name" unless length $name;
     run (sub {
-      return get_n ('user', name => $name, signal => $signal);
+      return Promise->resolve->then (sub {
+        return get_n ('user', name => $name, signal => $signal);
+      })->then (sub {
+        return get_n_newer ('user', name => $name, signal => $signal);
+      });
     });
     #run (sub {
     #  return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
