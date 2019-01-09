@@ -34,6 +34,80 @@ sub validate_name ($) {
   die "Unexpected name |$name|" unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
 } # validate_name
 
+{
+  my $Indexes = {};
+  
+  sub index_user (%) {
+    my %args = @_;
+    
+    validate_name $args{url_name};
+    my $item = $Indexes->{users}->{url_names}->{$args{url_name}} ||= {};
+
+    if (defined $args{followers_count}) {
+      $item->{followers_count} = $args{followers_count};
+    }
+  } # index_user
+
+  sub index_target (%) {
+    my %args = @_;
+
+    if (defined $args{url_name}) {
+      validate_name $args{url_name};
+      if ($args{url_name} =~ m{\@h$}) {
+        $Indexes->{keywords}->{$args{word}}->{url_name} = $args{url_name};
+        $Indexes->{keywords}->{$args{word}}->{url_name} = $args{word};
+      } elsif ($args{url_name} =~ m{^([0-9]+)\@asin$}) {
+        $Indexes->{asins}->{$1}->{url_name} = $args{url_name};
+        $Indexes->{asins}->{$1}->{word} = $args{word};
+      } else {
+        index_user url_name => $args{url_name};
+      }
+    } else {
+      $Indexes->{keywords}->{$args{word}}->{url_name} = $args{word};
+    }
+  } # index_target
+
+  sub index_thread_entry (%) {
+    my %args = @_;
+    $Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{name}}->{$args{eid}}
+        = [$args{timestamp}, $args{user}];
+  } # index_thread_entry
+
+  sub index_reply_entry (%) {
+    my %args = @_;
+    $Indexes->{'reply_entries'}->{children}->{$args{parent_eid}}->{$args{child_eid}}
+        = [$args{timestamp}, $args{child_user}, $args{parent_user}];
+  } # index_reply_entry
+
+  my $IndexNames = [qw(users keywords asins
+                       user_entries_jp target_entries_jp
+                       user_entries_com target_entries_com
+                       reply_entries)];
+
+  sub load_indexes () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('indexes', $name . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      return $file->is_file->then (sub {
+        return {} unless $_[0];
+        return $file->read_byte_string->then
+            (sub { return json_bytes2perl $_[0] });
+      })->then (sub {
+        $Indexes->{$name} = $_[0];
+      });
+    } $IndexNames;
+  } # load_indexes
+
+  sub save_indexes () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('indexes', $name . '.json');
+      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
+    } $IndexNames;
+  } # save_indexes
+}
+
 sub save_entries ($$) {
   my ($type, $items) = @_;
   return promised_for {
@@ -42,9 +116,53 @@ sub save_entries ($$) {
     validate_name $item->{user}->{screen_name};
     validate_name $item->{id};
     validate_name $item->{tld};
+
+    my $ts = Web::DateTime::Parser->parse_global_date_and_time_string
+        ($item->{created_at});
+
+    index_user
+        url_name => $item->{user}->{screen_name},
+        followers_count => $item->{user}->{followers_count};
+    index_target
+        url_name => $item->{target}->{url_name},
+        word => $item->{target}->{word};
+    index_target
+        word => $item->{source};
+
+    if (length $item->{in_reply_to_user_id}) {
+      index_user
+          url_name => $item->{in_reply_to_user_id};
+    }
+    if (length $item->{in_reply_to_status_id}) {
+      index_reply_entry
+          parent_user => $item->{user}->{screen_name},
+          parent_eid => $item->{id},
+          child_user => $item->{in_reply_to_user_id},
+          child_eid => $item->{in_reply_to_status_id},
+          timestamp => $ts->to_unix_number;
+    }
+    for (@{$item->{replies}}) {
+      index_user
+          url_name => $_->{user}->{screen_name};
+    }
+
+    index_thread_entry
+        tld => $item->{tld},
+        type => 'user',
+        name => $item->{user}->{screen_name},
+        user => $item->{user}->{screen_name},
+        eid => $item->{id},
+        timestamp => $ts->to_unix_number;
+    index_thread_entry
+        tld => $item->{tld},
+        type => 'target',
+        name => $item->{target}->{url_name},
+        user => $item->{user}->{screen_name},
+        eid => $item->{id},
+        timestamp => $ts->to_unix_number;
     
-    my $path = $DataPath->child ('users')
-        ->child ($item->{user}->{screen_name} . '.' . $item->{tld})
+    my $path = $DataPath->child ('entries')
+        ->child ($item->{user}->{screen_name})
         ->child ($item->{id} . '.' . $type . '.json');
     my $file = Promised::File->new_from_path ($path);
 
@@ -55,11 +173,10 @@ sub save_entries ($$) {
   } $items;
 } # save_entries
 
-sub get ($%) {
-  my ($type, %args) = @_;
+sub get_h ($$%) {
+  my ($type, $tld, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $tld = 'jp'; # XXX
+      (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
   my $page = 1;
   return ((promised_until {
     return with_retry (sub {
@@ -83,7 +200,7 @@ sub get ($%) {
       my $json = $_[0];
       if (ref $json eq 'ARRAY') {
         return 'done' unless @$json;
-        
+
         $_->{tld} = $tld for @$json;
         return Promise->all ([
           save_entries ('h', $json),
@@ -99,16 +216,33 @@ sub get ($%) {
   })->finally (sub {
     return $client->close;
   }));
-} # get
+} # get_h
+
+sub run ($) {
+  my $code = shift;
+  return load_indexes->then (sub {
+    return $code->();
+  })->then (sub {
+    return save_indexes;
+  })->to_cv->recv;
+} # run
 
 sub main (@) {
   my $command = shift // '';
   if ($command eq 'user') {
     my $name = shift // '';
     die "Usage: har user name" unless length $name;
-    get ('user', name => $name)->to_cv->recv;
+    run (sub {
+      return get_h ('user', 'jp', name => $name)->then (sub {
+        return save_indexes;
+      })->then (sub {
+        return get_h ('user', 'com', name => $name);
+      });
+    });
   } elsif ($command eq 'public') {
-    get ('public')->to_cv->recv;
+    run (sub {
+      return get_h ('public', 'jp');
+    });
   } else {
     die "Usage: har command\n";
   }
