@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Path::Tiny;
+use AbortController;
 use Promise;
 use Promised::Flow;
 use Promised::File;
@@ -10,11 +11,16 @@ use Web::Transport::BasicClient;
 
 my $DataPath = path (__FILE__)->parent->parent->child ('data');
 
-sub with_retry ($) {
+sub with_retry ($$) {
   my $code = shift;
+  my $signal = shift;
   my $return;
   my $n = 0;
   return ((promised_wait_until {
+    if ($signal->aborted) {
+      $return = undef;
+      return 'done';
+    }
     return Promise->resolve->then ($code)->then (sub {
       $return = $_[0];
       return 'done';
@@ -55,7 +61,7 @@ sub validate_name ($) {
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@h$}) {
         $Indexes->{keywords}->{$args{word}}->{url_name} = $args{url_name};
-        $Indexes->{keywords}->{$args{word}}->{url_name} = $args{word};
+        $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
       } elsif ($args{url_name} =~ m{^([0-9]+)\@asin$}) {
         $Indexes->{asins}->{$1}->{url_name} = $args{url_name};
         $Indexes->{asins}->{$1}->{word} = $args{word};
@@ -63,7 +69,7 @@ sub validate_name ($) {
         index_user url_name => $args{url_name};
       }
     } else {
-      $Indexes->{keywords}->{$args{word}}->{url_name} = $args{word};
+      $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
     }
   } # index_target
 
@@ -196,8 +202,9 @@ sub get_h ($$%) {
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
-    })->then (sub {
+    }, $args{signal})->then (sub {
       my $json = $_[0];
+      return 'done' if $args{signal}->aborted and not defined $json;
       if (ref $json eq 'ARRAY') {
         return 'done' unless @$json;
 
@@ -207,6 +214,7 @@ sub get_h ($$%) {
         ])->then (sub {
           return 'done' if $page++ > 100;
           print STDERR "*";
+          return 'done' if $args{signal}->aborted;
           return not 'done';
         });
       } else {
@@ -229,19 +237,27 @@ sub run ($) {
 
 sub main (@) {
   my $command = shift // '';
+  my $ac = AbortController->new;
+  $SIG{INT} = $SIG{TERM} = sub {
+    warn "Aborted...\n";
+    $ac->abort;
+    delete $SIG{INT};
+    delete $SIG{TERM};
+  };
+  my $signal = $ac->signal;
   if ($command eq 'user') {
     my $name = shift // '';
     die "Usage: har user name" unless length $name;
     run (sub {
-      return get_h ('user', 'jp', name => $name)->then (sub {
+      return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
         return save_indexes;
       })->then (sub {
-        return get_h ('user', 'com', name => $name);
+        return get_h ('user', 'com', name => $name, signal => $signal);
       });
     });
   } elsif ($command eq 'public') {
     run (sub {
-      return get_h ('public', 'jp');
+      return get_h ('public', 'jp', signal => $signal);
     });
   } else {
     die "Usage: har command\n";
