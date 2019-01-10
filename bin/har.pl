@@ -38,6 +38,21 @@ sub with_retry ($$) {
   }));
 } # with_retry
 
+sub sleeper ($$) {
+  my $n = shift;
+  my $signal = shift;
+  return sub {
+    return if $signal->aborted;
+    if (($n % 20) == 0) {
+      return promised_sleep 75;
+    } elsif (($n % 10) == 0) {
+      return promised_sleep 25;
+    } else {
+      return promised_sleep 5;
+    }
+  };
+} # sleeper
+
 sub validate_name ($) {
   my $name = shift;
   die "Unexpected name |$name|" unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
@@ -621,53 +636,104 @@ sub save () {
 
 sub run ($) {
   my $code = shift;
+  warn "Stop: Ctrl-C\n";
+  my $start = time;
   return load->then (sub {
     return $code->();
   })->then (sub {
     return save;
+  })->then (sub {
+    my $end = time;
+    warn sprintf "\nElapsed: %ds\n", $end - $start;
   })->to_cv->recv;
 } # run
 
 sub user ($$) {
   my ($name, $signal) = @_;
   return Promise->resolve->then (sub {
+    return if $signal->aborted;
     return get_users ('favorite', name => $name, signal => $signal);
   })->then (sub {
+    return if $signal->aborted;
     return get_users ('fan', name => $name, signal => $signal);
   })->then (sub {
+    return if $signal->aborted;
     return get_favorite_keywords (name => $name, signal => $signal);
   })->then (sub {
+    return if $signal->aborted;
     return save;
   })->then (sub {
+    return if $signal->aborted;
     return get_n ('user', name => $name, signal => $signal);
   })->then (sub {
+    return if $signal->aborted;
     return save;
   })->then (sub {
+    return if $signal->aborted;
     return get_n_newer ('user', name => $name, signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return save;
   });
   #return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
+  #  return if $signal->aborted;
   #  return save;
   #})->then (sub {
+  #  return if $signal->aborted;
   #  return get_h ('user', 'com', name => $name, signal => $signal);
+  #})->then (sub {
+  #  return if $signal->aborted;
+  #  return save;
   #});
 } # user
 
 sub keyword ($$) {
   my ($word, $signal) = @_;
   return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
+    return if $signal->aborted;
     return save;
   })->then (sub {
+    return if $signal->aborted;
     return get_h ('keyword', 'com', word => $word, signal => $signal);
   })->then (sub {
+    return if $signal->aborted;
     return save;
   });
 } # keyword
+
+sub antenna ($$) {
+  my ($name, $signal) = @_;
+  return Promise->resolve->then (sub {
+    return if $signal->aborted;
+    return user ($name, $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    my $names = [keys %{$Graphs->{favorite_user}->{$name} or {}}];
+    my $n = 0;
+    return promised_for {
+      return if $signal->aborted;
+      my $name = shift;
+      print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, 0+@$names;
+      return user ($name, $signal)->then (sleeper $n, $signal);
+    } $names;
+  })->then (sub {
+    return if $signal->aborted;
+    my $words = [keys %{$Graphs->{favorite_keyword}->{$name} or {}}];
+    my $n = 0;
+    return promised_for {
+      return if $signal->aborted;
+      my $word = shift;
+      print STDERR sprintf "\x0D%s\x0DKeyword %d/%d ", " " x 20, ++$n, 0+@$words;
+      return keyword ($word, $signal)->then (sleeper $n, $signal);
+    } $words;
+  });
+} # antenna
 
 sub main (@) {
   my $command = shift // '';
   my $ac = AbortController->new;
   $SIG{INT} = $SIG{TERM} = sub {
-    warn "Aborted...\n";
+    warn "Terminating...\n";
     $ac->abort;
     delete $SIG{INT};
     delete $SIG{TERM};
@@ -675,15 +741,21 @@ sub main (@) {
   my $signal = $ac->signal;
   if ($command eq 'user') {
     my $name = shift // '';
-    die "Usage: har user name" unless length $name;
+    die "Usage: har $command name" unless length $name;
     run (sub {
       return user ($name, $signal);
     });
   } elsif ($command eq 'keyword') {
     my $word = decode_web_utf8 (shift // '');
-    die "Usage: har keyword word" unless length $word;
+    die "Usage: har $command word" unless length $word;
     run (sub {
       return keyword ($word, $signal);
+    });
+  } elsif ($command eq 'antenna') {
+    my $name = shift // '';
+    die "Usage: har $command name" unless length $name;
+    run (sub {
+      return antenna ($name, $signal);
     });
   } elsif ($command eq 'public') {
     run (sub {
