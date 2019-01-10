@@ -483,9 +483,9 @@ sub get_n ($%) {
           $req = {
             url => Web::URL->parse_string ($json->{newer_url}),
           };
-          if ($n++ > 200) {
-            return 'done';
-          }
+          $n++;
+          return 'done' if $n > 20 and not $type eq 'public';
+          return 'done' if $n > 900000 and $type eq 'public';
           return not 'done';
         });
       } else {
