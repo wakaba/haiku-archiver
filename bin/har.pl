@@ -437,6 +437,7 @@ sub get_n ($%) {
   }
   my $n = 0;
   return ((promised_until {
+    my $time = time;
     return with_retry (sub {
       return $client->request (%$req)->then (sub {
         my $res = $_[0];
@@ -448,6 +449,7 @@ sub get_n ($%) {
       return 'done' if $args{signal}->aborted and not defined $json;
       if (ref $json eq 'HASH') {
         $state->{newer_url} //= $json->{newer_url};
+        $state->{last_checked} = $time;
         unless (@{$json->{items}}) {
           $state->{no_more_older} = 1;
           delete $state->{older_url};
@@ -754,6 +756,58 @@ sub antenna ($$) {
   });
 } # antenna
 
+sub public ($) {
+  my $signal = shift;
+  return Promise->resolve->then (sub {
+    #return get_h ('public', 'jp', signal => $signal);
+    return get_n ('public', signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return get_n_newer ('public', signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return get_h ('public', 'com', signal => $signal);
+  });
+} # public
+
+sub auto ($) {
+  my $signal = shift;
+  return Promise->resolve->then (sub {
+    return if $signal->aborted;
+    return public ($signal);
+  })->then (sub {
+    return if $signal->aborted;
+    my $n = 0;
+    return promised_wait {
+      return 'done' if $signal->aborted;
+
+      my $name;
+      my $last_checked = time;
+      my $min_done_last_checked = time - 24*60*60;
+      for my $x (keys %{$Indexes->{users}->{url_names}}) {
+        if (not defined $Indexes->{users}->{url_names}->{$x}->{n}->{last_checked}) {
+          $name = $x;
+          last;
+        } elsif ($Indexes->{users}->{url_names}->{$x}->{n}->{last_checked} >= $min_done_last_checked) {
+          #
+        } elsif ($Indexes->{users}->{url_names}->{$x}->{n}->{last_checked} < $last_checked) {
+          $last_checked = $Indexes->{users}->{url_names}->{$x}->{n}->{last_checked};
+          $name = $x;
+        }
+      }
+      return 'done' unless defined $name;
+
+      my $all = 0+@{[grep {
+        not defined $Indexes->{users}->{url_names}->{$_}->{n}->{last_checked} or
+        $Indexes->{users}->{url_names}->{$_}->{n}->{last_checked} < $min_done_last_checked;
+      } keys %{$Indexes->{users}->{url_names}}]};
+      
+      print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
+      return user ($name, $signal)->then (sleeper $n, $signal);
+    };
+  });
+} # auto
+
 sub main (@) {
   my $command = shift // '';
   my $ac = AbortController->new;
@@ -784,16 +838,11 @@ sub main (@) {
     });
   } elsif ($command eq 'public') {
     run (sub {
-      return Promise->resolve->then (sub {
-        #return get_h ('public', 'jp', signal => $signal);
-        return get_n ('public', signal => $signal);
-      })->then (sub {
-        return if $signal->aborted;
-        return get_n_newer ('public', signal => $signal);
-      })->then (sub {
-        return if $signal->aborted;
-        return get_h ('public', 'com', signal => $signal);
-      });
+      return public ($signal);
+    });
+  } elsif ($command eq 'auto') {
+    run (sub {
+      return auto ($signal);
     });
   } else {
     die "Usage: har command\n";
