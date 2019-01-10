@@ -185,7 +185,7 @@ sub save_h_entries ($) {
         url_name => $item->{target}->{url_name},
         word => $item->{target}->{word};
     index_target
-        word => $item->{source};
+        word => $item->{source} if defined $item->{source};
 
     if (length $item->{in_reply_to_user_id}) {
       index_user
@@ -291,6 +291,7 @@ sub get_h ($$%) {
           body_formats => 'haiku',
           count => 200,
           page => $page,
+          ($type eq 'keyword' ? (word => $args{word}) : ()),
         },
       )->then (sub {
         my $res = $_[0];
@@ -603,6 +604,16 @@ sub main (@) {
     #    return get_h ('user', 'com', name => $name, signal => $signal);
     #  });
     #});
+  } elsif ($command eq 'keyword') {
+    my $word = shift // '';
+    die "Usage: har keyword word" unless length $word;
+    run (sub {
+      return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
+        return save;
+      })->then (sub {
+        return get_h ('keyword', 'com', word => $word, signal => $signal);
+      });
+    });
   } elsif ($command eq 'public') {
     run (sub {
       return get_h ('public', 'jp', signal => $signal);
