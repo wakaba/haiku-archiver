@@ -567,6 +567,41 @@ sub run ($) {
   })->to_cv->recv;
 } # run
 
+sub user ($$) {
+  my ($name, $signal) = @_;
+  return Promise->resolve->then (sub {
+    return get_users ('favorite', name => $name, signal => $signal);
+  })->then (sub {
+    return get_users ('fan', name => $name, signal => $signal);
+  })->then (sub {
+    return get_favorite_keywords (name => $name, signal => $signal);
+  })->then (sub {
+    return save;
+  })->then (sub {
+    return get_n ('user', name => $name, signal => $signal);
+  })->then (sub {
+    return save;
+  })->then (sub {
+    return get_n_newer ('user', name => $name, signal => $signal);
+  });
+  #return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
+  #  return save;
+  #})->then (sub {
+  #  return get_h ('user', 'com', name => $name, signal => $signal);
+  #});
+} # user
+
+sub keyword ($$) {
+  my ($word, $signal) = @_;
+  return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
+    return save;
+  })->then (sub {
+    return get_h ('keyword', 'com', word => $word, signal => $signal);
+  })->then (sub {
+    return save;
+  });
+} # keyword
+
 sub main (@) {
   my $command = shift // '';
   my $ac = AbortController->new;
@@ -581,38 +616,13 @@ sub main (@) {
     my $name = shift // '';
     die "Usage: har user name" unless length $name;
     run (sub {
-      return Promise->resolve->then (sub {
-        return get_users ('favorite', name => $name, signal => $signal);
-      })->then (sub {
-        return get_users ('fan', name => $name, signal => $signal);
-      })->then (sub {
-        return get_favorite_keywords (name => $name, signal => $signal);
-      })->then (sub {
-        return save;
-      })->then (sub {
-        return get_n ('user', name => $name, signal => $signal);
-      })->then (sub {
-        return save;
-      })->then (sub {
-        return get_n_newer ('user', name => $name, signal => $signal);
-      });
+      return user ($name, $signal);
     });
-    #run (sub {
-    #  return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
-    #    return save;
-    #  })->then (sub {
-    #    return get_h ('user', 'com', name => $name, signal => $signal);
-    #  });
-    #});
   } elsif ($command eq 'keyword') {
     my $word = shift // '';
     die "Usage: har keyword word" unless length $word;
     run (sub {
-      return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
-        return save;
-      })->then (sub {
-        return get_h ('keyword', 'com', word => $word, signal => $signal);
-      });
+      return keyword ($word, $signal);
     });
   } elsif ($command eq 'public') {
     run (sub {
