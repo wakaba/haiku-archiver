@@ -208,7 +208,8 @@ sub save_h_entries ($) {
         followers_count => $item->{user}->{followers_count};
     index_target
         url_name => $item->{target}->{url_name},
-        word => $item->{target}->{word};
+        word => $item->{target}->{word}
+        if defined $item->{target}->{word};
     index_target
         word => $item->{source} if defined $item->{source};
 
@@ -242,8 +243,10 @@ sub save_h_entries ($) {
         name => $item->{target}->{url_name},
         user => $item->{user}->{screen_name},
         eid => $item->{id},
-        timestamp => $ts->to_unix_number;
-    if ($item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
+        timestamp => $ts->to_unix_number
+        if defined $item->{target}->{url_name};
+    if (defined $item->{target}->{url_name} and
+        $item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
       index_thread_entry
           tld => $item->{tld},
           type => 'public',
@@ -275,7 +278,8 @@ sub save_n_entries ($) {
         url_name => $item->{author}->{url_name};
     index_target
         url_name => $item->{target}->{url_name},
-        word => $item->{target}->{display_name};
+        word => $item->{target}->{display_name}
+        if defined $item->{target}->{display_name};
     index_target
         url_name => $item->{source_target}->{url_name},
         word => $item->{source_target}->{display_name};
@@ -306,8 +310,10 @@ sub save_n_entries ($) {
         name => $item->{target}->{url_name},
         user => $item->{author}->{url_name},
         eid => $item->{eid},
-        timestamp => $item->{created_on};
-    if ($item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
+        timestamp => $item->{created_on}
+        if defined $item->{target}->{url_name};
+    if (defined $item->{target}->{url_name} and
+        $item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
       index_thread_entry
           tld => $item->{tld},
           type => 'public',
@@ -402,16 +408,28 @@ sub get_n ($%) {
   my ($type, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  die "Bad type |$type|" unless $type eq 'user';
-  my $req = {
+  die "Bad type |$type|" unless $type eq 'user' or $type eq 'public';
+  my $req = $type eq 'user' ? {
     path => [$args{name}, 'index.json'],
     params => {
       location => q<http://h2.hatena.ne.jp/>,
       dccol => 'ugouser',
       per_page => 200,
     },
-  };
-  my $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  } : $type eq 'public' ? {
+    path => ['index.json'],
+    params => {
+      per_page => 200,
+    },
+  } : die;
+  my $state;
+  if ($type eq 'user') {
+    $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  } elsif ($type eq 'public') {
+    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
+  } else {
+    die "Bad type |$type|";
+  }
   if ($state->{no_more_older}) {
     return;
   } elsif (defined $state->{older_url}) {
@@ -464,8 +482,15 @@ sub get_n_newer ($%) {
   my ($type, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  die "Bad type |$type|" unless $type eq 'user';
-  my $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  die "Bad type |$type|" unless $type eq 'user' or $type eq 'public';
+  my $state;
+  if ($type eq 'user') {
+    $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
+  } elsif ($type eq 'public') {
+    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
+  } else {
+    die "Bad type |$type|";
+  }
   return unless defined $state->{newer_url};
   my $req = {url => Web::URL->parse_string ($state->{newer_url})};
   return ((promised_until {
@@ -759,7 +784,16 @@ sub main (@) {
     });
   } elsif ($command eq 'public') {
     run (sub {
-      return get_h ('public', 'jp', signal => $signal);
+      return Promise->resolve->then (sub {
+        #return get_h ('public', 'jp', signal => $signal);
+        return get_n ('public', signal => $signal);
+      })->then (sub {
+        return if $signal->aborted;
+        return get_n_newer ('public', signal => $signal);
+      })->then (sub {
+        return if $signal->aborted;
+        return get_h ('public', 'com', signal => $signal);
+      });
     });
   } else {
     die "Usage: har command\n";
