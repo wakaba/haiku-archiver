@@ -5,6 +5,7 @@ use AbortController;
 use Promise;
 use Promised::Flow;
 use Promised::File;
+use Web::Encoding;
 use Web::URL;
 use JSON::PS;
 use Web::Transport::BasicClient;
@@ -87,9 +88,14 @@ my $Graphs = {};
     }
   } # index_target
 
+  sub index_entry (%) {
+    my %args = @_;
+    $Indexes->{entries}->{eid}->{$args{eid}} = [$args{timestamp}, $args{user}];
+  } # index_entry
+
   sub index_thread_entry (%) {
     my %args = @_;
-    $Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{name}}->{$args{eid}}
+    $Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{tld}}->{$args{eid}}
         = [$args{timestamp}, $args{user}];
   } # index_thread_entry
 
@@ -99,10 +105,12 @@ my $Graphs = {};
         = [$args{timestamp}, $args{child_user}, $args{parent_user}];
   } # index_reply_entry
 
-  my $IndexNames = [qw(users keywords
+  my $IndexNames = [qw(entries
+                       users keywords misc
+                       public_entries_jp public_entries_com
                        user_entries_jp target_entries_jp
                        user_entries_com target_entries_com
-                       reply_entries misc)];
+                       reply_entries)];
 
   sub load_indexes () {
     return promised_for {
@@ -220,6 +228,19 @@ sub save_h_entries ($) {
         user => $item->{user}->{screen_name},
         eid => $item->{id},
         timestamp => $ts->to_unix_number;
+    if ($item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
+      index_thread_entry
+          tld => $item->{tld},
+          type => 'public',
+          user => $item->{user}->{screen_name},
+          eid => $item->{id},
+          timestamp => $ts->to_unix_number;
+    }
+
+    index_entry
+        user => $item->{user}->{screen_name},
+        eid => $item->{id},
+        timestamp => $ts->to_unix_number;
 
     return write_entry $item->{user}->{screen_name}, $item->{id}, 'h', $item;
   } $items;
@@ -271,7 +292,20 @@ sub save_n_entries ($) {
         user => $item->{author}->{url_name},
         eid => $item->{eid},
         timestamp => $item->{created_on};
+    if ($item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
+      index_thread_entry
+          tld => $item->{tld},
+          type => 'public',
+          user => $item->{author}->{url_name},
+          eid => $item->{eid},
+          timestamp => $item->{created_on};
+    }
 
+    index_entry
+        user => $item->{author}->{url_name},
+        eid => $item->{eid},
+        timestamp => $item->{created_on};
+    
     return write_entry $item->{author}->{url_name}, $item->{eid}, 'n', $item;
   } $items;
 } # save_n_entries
@@ -646,7 +680,7 @@ sub main (@) {
       return user ($name, $signal);
     });
   } elsif ($command eq 'keyword') {
-    my $word = shift // '';
+    my $word = decode_web_utf8 (shift // '');
     die "Usage: har keyword word" unless length $word;
     run (sub {
       return keyword ($word, $signal);
