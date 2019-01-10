@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Path::Tiny;
 use AbortController;
+use AnyEvent;
 use Promise;
 use Promised::Flow;
 use Promised::File;
@@ -13,6 +14,17 @@ use Web::DateTime;
 use Web::DateTime::Parser;
 
 my $DataPath = path (__FILE__)->parent->parent->child ('data');
+
+my $Counts = {entries => 0, users => 0, keywords => 0};
+sub reset_count () {
+  warn sprintf "\nNew entries: %d, users: %d, keywords: %d\n",
+      $Counts->{entries}, $Counts->{users}, $Counts->{keywords};
+  $Counts = {entries => 0, users => 0, keywords => 0};
+} # reset_count
+my $CountInterval = 60;
+my $timer = AE::timer $CountInterval, $CountInterval, sub {
+  reset_count;
+};
 
 sub with_retry ($$) {
   my $code = shift;
@@ -66,6 +78,9 @@ my $Graphs = {};
     my %args = @_;
     
     validate_name $args{url_name};
+
+    $Counts->{users}++ unless defined $Indexes->{users}->{url_names}->{$args{url_name}};
+    
     my $item = $Indexes->{users}->{url_names}->{$args{url_name}} ||= {};
 
     if (defined $args{followers_count}) {
@@ -79,10 +94,11 @@ my $Graphs = {};
   sub index_target (%);
   sub index_target (%) {
     my %args = @_;
-
+    
     if (defined $args{url_name}) {
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h|asin|http)$}) {
+        $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$args{word}};
         $Indexes->{keywords}->{word}->{$args{word}}->{url_name} = $args{url_name};
         $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
       } else {
@@ -90,6 +106,7 @@ my $Graphs = {};
         return;
       }
     } else {
+      $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$args{word}};
       $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
     }
 
@@ -105,6 +122,7 @@ my $Graphs = {};
 
   sub index_entry (%) {
     my %args = @_;
+    $Counts->{entries}++ unless defined $Indexes->{entries}->{eid}->{$args{eid}};
     $Indexes->{entries}->{eid}->{$args{eid}} = [$args{timestamp}, $args{user}];
   } # index_entry
 
@@ -282,7 +300,8 @@ sub save_n_entries ($) {
         if defined $item->{target}->{display_name};
     index_target
         url_name => $item->{source_target}->{url_name},
-        word => $item->{source_target}->{display_name};
+        word => $item->{source_target}->{display_name}
+        if defined $item->{source_target}->{display_name};
 
     if (defined $item->{reply_to_author}) {
       index_user
@@ -448,7 +467,7 @@ sub get_n ($%) {
       my $json = $_[0];
       return 'done' if $args{signal}->aborted and not defined $json;
       if (ref $json eq 'HASH') {
-        $state->{newer_url} //= $json->{newer_url};
+        $state->{newer_url} = $json->{newer_url};
         $state->{last_checked} = $time;
         unless (@{$json->{items}}) {
           $state->{no_more_older} = 1;
@@ -465,7 +484,6 @@ sub get_n ($%) {
             url => Web::URL->parse_string ($json->{newer_url}),
           };
           if ($n++ > 200) {
-            $state->{newer_url} = $req->{url}->stringify;
             return 'done';
           }
           return not 'done';
@@ -624,6 +642,7 @@ sub run ($) {
   })->then (sub {
     my $end = time;
     warn sprintf "\nElapsed: %ds\n", $end - $start;
+    reset_count;
   })->to_cv->recv;
 } # run
 
