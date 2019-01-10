@@ -415,11 +415,13 @@ sub get_n ($%) {
       location => q<http://h2.hatena.ne.jp/>,
       dccol => 'ugouser',
       per_page => 200,
+      order => 'asc',
     },
   } : $type eq 'public' ? {
     path => ['index.json'],
     params => {
       per_page => 200,
+      order => 'asc',
     },
   } : die;
   my $state;
@@ -430,10 +432,8 @@ sub get_n ($%) {
   } else {
     die "Bad type |$type|";
   }
-  if ($state->{no_more_older}) {
-    return;
-  } elsif (defined $state->{older_url}) {
-    $req = {url => Web::URL->parse_string ($state->{older_url})};
+  if (defined $state->{newer_url}) {
+    $req = {url => Web::URL->parse_string ($state->{newer_url})};
   }
   my $n = 0;
   return ((promised_until {
@@ -462,11 +462,10 @@ sub get_n ($%) {
           print STDERR "*";
           return 'done' if $args{signal}->aborted;
           $req = {
-            url => Web::URL->parse_string ($json->{older_url}),
+            url => Web::URL->parse_string ($json->{newer_url}),
           };
-          if ($n++ > 10) {
-            $state->{older_url} = $req->{url}->stringify;
-            delete $state->{no_more_older};
+          if ($n++ > 200) {
+            $state->{newer_url} = $req->{url}->stringify;
             return 'done';
           }
           return not 'done';
@@ -479,53 +478,6 @@ sub get_n ($%) {
     return $client->close;
   }));
 } # get_n
-
-sub get_n_newer ($%) {
-  my ($type, %args) = @_;
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  die "Bad type |$type|" unless $type eq 'user' or $type eq 'public';
-  my $state;
-  if ($type eq 'user') {
-    $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
-  } elsif ($type eq 'public') {
-    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
-  } else {
-    die "Bad type |$type|";
-  }
-  return unless defined $state->{newer_url};
-  my $req = {url => Web::URL->parse_string ($state->{newer_url})};
-  return ((promised_until {
-    return with_retry (sub {
-      return $client->request (%$req)->then (sub {
-        my $res = $_[0];
-        die $res unless $res->status == 200;
-        return json_bytes2perl $res->body_bytes;
-      });
-    }, $args{signal})->then (sub {
-      my $json = $_[0];
-      return 'done' if $args{signal}->aborted and not defined $json;
-      if (ref $json eq 'HASH') {
-        unless (@{$json->{items}}) {
-          return 'done';
-        }
-
-        return Promise->all ([
-          save_n_entries ($json->{items}),
-        ])->then (sub {
-          print STDERR "*";
-          return 'done' if $args{signal}->aborted;
-          $state->{newer_url} = $json->{newer_url};
-          return 'done';
-        });
-      } else {
-        die "Server returns an unexpected response";
-      }
-    });
-  })->finally (sub {
-    return $client->close;
-  }));
-} # get_n_newer
 
 sub get_users ($$%) {
   my ($type, %args) = @_;
@@ -695,12 +647,6 @@ sub user ($$) {
   })->then (sub {
     return if $signal->aborted;
     return save;
-  })->then (sub {
-    return if $signal->aborted;
-    return get_n_newer ('user', name => $name, signal => $signal);
-  })->then (sub {
-    return if $signal->aborted;
-    return save;
   });
   #return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
   #  return if $signal->aborted;
@@ -761,9 +707,6 @@ sub public ($) {
   return Promise->resolve->then (sub {
     #return get_h ('public', 'jp', signal => $signal);
     return get_n ('public', signal => $signal);
-  })->then (sub {
-    return if $signal->aborted;
-    return get_n_newer ('public', signal => $signal);
   })->then (sub {
     return if $signal->aborted;
     return get_h ('public', 'com', signal => $signal);
