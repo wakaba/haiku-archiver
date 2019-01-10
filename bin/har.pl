@@ -41,6 +41,7 @@ sub validate_name ($) {
 } # validate_name
 
 my $Indexes = {};
+my $Graphs = {};
 {
   
   sub index_user (%) {
@@ -51,9 +52,13 @@ my $Indexes = {};
 
     if (defined $args{followers_count}) {
       $item->{followers_count} = $args{followers_count};
+      if ($item->{followers_count} == 0) {
+        $Indexes->{users}->{url_names}->{$args{url_name}}->{fan_user_updated} //= time;
+      }
     }
   } # index_user
 
+  sub index_target (%);
   sub index_target (%) {
     my %args = @_;
 
@@ -64,9 +69,19 @@ my $Indexes = {};
         $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
       } else {
         index_user url_name => $args{url_name};
+        return;
       }
     } else {
       $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
+    }
+
+    for (qw(followers_count entry_count entry_count_jp entry_count_com)) {
+      $Indexes->{keywords}->{$args{word}}->{$_} = $args{$_} if defined $args{$_};
+    }
+
+    for (@{$args{related_keywords} or []}) {
+      index_target word => $_;
+      $Graphs->{related_keyword}->{$args{word}}->{$_} = 1;
     }
   } # index_target
 
@@ -109,6 +124,34 @@ my $Indexes = {};
       return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
     } $IndexNames;
   } # save_indexes
+}
+
+{
+  my $GraphNames = [qw(favorite_user fan_user favorite_keyword
+                       related_keyword)];
+  
+  sub load_graphs () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('graphs', $name . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      return $file->is_file->then (sub {
+        return {} unless $_[0];
+        return $file->read_byte_string->then
+            (sub { return json_bytes2perl $_[0] });
+      })->then (sub {
+        $Graphs->{$name} = $_[0];
+      });
+    } $GraphNames;
+  } # load_hraphs
+
+  sub save_graphs () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('graphs', $name . '.json');
+      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Graphs->{$name});
+    } $GraphNames;
+  } # save_graphs
 }
 
 sub write_entry ($$$$) {
@@ -380,12 +423,146 @@ sub get_n_newer ($%) {
   }));
 } # get_n_newer
 
+sub get_users ($$%) {
+  my ($type, %args) = @_;
+
+  my $ts = $Indexes->{users}->{url_names}->{$args{name}}->{$type . '_user_updated'};
+  return if defined $ts;
+  
+  my $client = Web::Transport::BasicClient->new_from_url
+      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  my $page = 1;
+  return ((promised_until {
+    return with_retry (sub {
+      return $client->request (
+        path => [
+          'api', 'statuses',
+          ({
+            favorite => 'friends',
+            fan => 'followers',
+          }->{$type} // die "Bad type |$type|"),
+          $args{name} . '.json'
+        ],
+        params => {
+          page => $page,
+        },
+      )->then (sub {
+        my $res = $_[0];
+        die $res unless $res->status == 200;
+        return json_bytes2perl $res->body_bytes;
+      });
+    }, $args{signal})->then (sub {
+      my $json = $_[0];
+      return 'done' if $args{signal}->aborted and not defined $json;
+      if (ref $json eq 'ARRAY') {
+        return 'done' unless @$json;
+
+        for my $item (@$json) {
+          index_user
+              url_name => $item->{screen_name},
+              followers_count => $item->{followers_count};
+          $Graphs->{$type . '_user'}->{$args{name}}->{$item->{screen_name}} = 1;
+        }
+
+        return 'done' if $page++ > 100;
+        print STDERR "*";
+        return 'done' if $args{signal}->aborted;
+        return not 'done';
+      } else {
+        die "Server returns an unexpected response";
+      }
+    });
+  })->then (sub {
+    return if $args{signal}->aborted;
+    $Indexes->{users}->{url_names}->{$args{name}}->{$type . '_user_updated'} = time;
+  })->then (sub {
+    return $client->close;
+  }));
+} # get_users
+
+sub get_favorite_keywords ($%) {
+  my (%args) = @_;
+
+  my $ts = $Indexes->{users}->{url_names}->{$args{name}}->{favorite_keyword_updated};
+  return if defined $ts;
+  
+  my $client = Web::Transport::BasicClient->new_from_url
+      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  my $page = 1;
+  my $prev_count = 0;
+  return ((promised_until {
+    return with_retry (sub {
+      return $client->request (
+        path => [
+          'api', 'statuses',
+          'keywords',
+          $args{name} . '.json'
+        ],
+        params => {
+          page => $page,
+        },
+      )->then (sub {
+        my $res = $_[0];
+        die $res unless $res->status == 200;
+        return json_bytes2perl $res->body_bytes;
+      });
+    }, $args{signal})->then (sub {
+      my $json = $_[0];
+      return 'done' if $args{signal}->aborted and not defined $json;
+      if (ref $json eq 'ARRAY') {
+        return 'done' unless @$json;
+
+        for my $item (@$json) {
+          index_target
+              word => $item->{word},
+              url_name => $item->{url_name},
+              followers_count => $item->{followers_count},
+              entry_count => $item->{entry_count},
+              entry_count_jp => $item->{entry_count_jp},
+              entry_count_com => $item->{entry_count_com},
+              related_keywords => $item->{related_keywords};
+          $Graphs->{favorite_keyword}->{$args{name}}->{$item->{word}} = 1;
+        }
+
+        return 'done' if @$json != 100 and $prev_count == @$json;
+        $prev_count = @$json;
+
+        return 'done' if $page++ > 100;
+        print STDERR "*";
+        return 'done' if $args{signal}->aborted;
+        return not 'done';
+      } else {
+        die "Server returns an unexpected response";
+      }
+    });
+  })->then (sub {
+    return if $args{signal}->aborted;
+    $Indexes->{users}->{url_names}->{$args{name}}->{favorite_keyword_updated} = time;
+  })->then (sub {
+    return $client->close;
+  }));
+} # get_favorite_keywords
+
+sub load () {
+  return Promise->all ([
+    load_indexes,
+    load_graphs,
+  ]);
+} # load
+
+sub save () {
+  return Promise->all ([
+    save_indexes,
+    save_graphs,
+  ]);
+} # save
+
 sub run ($) {
   my $code = shift;
-  return load_indexes->then (sub {
+  return load->then (sub {
     return $code->();
   })->then (sub {
-    return save_indexes;
+    return save;
   })->to_cv->recv;
 } # run
 
@@ -404,14 +581,24 @@ sub main (@) {
     die "Usage: har user name" unless length $name;
     run (sub {
       return Promise->resolve->then (sub {
+        return get_users ('favorite', name => $name, signal => $signal);
+      })->then (sub {
+        return get_users ('fan', name => $name, signal => $signal);
+      })->then (sub {
+        return get_favorite_keywords (name => $name, signal => $signal);
+      })->then (sub {
+        return save;
+      })->then (sub {
         return get_n ('user', name => $name, signal => $signal);
+      })->then (sub {
+        return save;
       })->then (sub {
         return get_n_newer ('user', name => $name, signal => $signal);
       });
     });
     #run (sub {
     #  return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
-    #    return save_indexes;
+    #    return save;
     #  })->then (sub {
     #    return get_h ('user', 'com', name => $name, signal => $signal);
     #  });
