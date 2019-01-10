@@ -59,12 +59,9 @@ my $Indexes = {};
 
     if (defined $args{url_name}) {
       validate_name $args{url_name};
-      if ($args{url_name} =~ m{\@h$}) {
+      if ($args{url_name} =~ m{\@(?:h|asin|http)$}) {
         $Indexes->{keywords}->{$args{word}}->{url_name} = $args{url_name};
         $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
-      } elsif ($args{url_name} =~ m{^([0-9]+)\@asin$}) {
-        $Indexes->{asins}->{$1}->{url_name} = $args{url_name};
-        $Indexes->{asins}->{$1}->{word} = $args{word};
       } else {
         index_user url_name => $args{url_name};
       }
@@ -85,7 +82,7 @@ my $Indexes = {};
         = [$args{timestamp}, $args{child_user}, $args{parent_user}];
   } # index_reply_entry
 
-  my $IndexNames = [qw(users keywords asins
+  my $IndexNames = [qw(users keywords
                        user_entries_jp target_entries_jp
                        user_entries_com target_entries_com
                        reply_entries)];
