@@ -8,6 +8,8 @@ use Promised::File;
 use Web::URL;
 use JSON::PS;
 use Web::Transport::BasicClient;
+use Web::DateTime;
+use Web::DateTime::Parser;
 
 my $DataPath = path (__FILE__)->parent->parent->child ('data');
 
@@ -65,18 +67,18 @@ my $Graphs = {};
     if (defined $args{url_name}) {
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h|asin|http)$}) {
-        $Indexes->{keywords}->{$args{word}}->{url_name} = $args{url_name};
-        $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
+        $Indexes->{keywords}->{word}->{$args{word}}->{url_name} = $args{url_name};
+        $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
       } else {
         index_user url_name => $args{url_name};
         return;
       }
     } else {
-      $Indexes->{keywords}->{$args{word}}->{word} = $args{word};
+      $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
     }
 
     for (qw(followers_count entry_count entry_count_jp entry_count_com)) {
-      $Indexes->{keywords}->{$args{word}}->{$_} = $args{$_} if defined $args{$_};
+      $Indexes->{keywords}->{word}->{$args{word}}->{$_} = $args{$_} if defined $args{$_};
     }
 
     for (@{$args{related_keywords} or []}) {
@@ -100,7 +102,7 @@ my $Graphs = {};
   my $IndexNames = [qw(users keywords
                        user_entries_jp target_entries_jp
                        user_entries_com target_entries_com
-                       reply_entries)];
+                       reply_entries misc)];
 
   sub load_indexes () {
     return promised_for {
@@ -278,6 +280,21 @@ sub get_h ($$%) {
   my ($type, $tld, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
+  my $state;
+  if ($type eq 'user') {
+    $state = $Indexes->{users}->{url_names}->{$args{name}}->{'h_' . $tld} ||= {};
+  } elsif ($type eq 'keyword') {
+    $state = $Indexes->{keywords}->{word}->{$args{word}}->{'h_' . $tld} ||= {};
+  } elsif ($type eq 'public') {
+    $state = $Indexes->{misc}->{public}->{'h_' . $tld} ||= {};
+  } else {
+    die "Bad type |$type|";
+  }
+  my $since;
+  if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
+    return if $tld eq 'com';
+    $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
+  }
   my $page = 1;
   return ((promised_until {
     return with_retry (sub {
@@ -292,6 +309,7 @@ sub get_h ($$%) {
           count => 200,
           page => $page,
           ($type eq 'keyword' ? (word => $args{word}) : ()),
+          since => $since,
         },
       )->then (sub {
         my $res = $_[0];
@@ -303,6 +321,12 @@ sub get_h ($$%) {
       return 'done' if $args{signal}->aborted and not defined $json;
       if (ref $json eq 'ARRAY') {
         return 'done' unless @$json;
+
+        my $ts = Web::DateTime::Parser->parse_global_date_and_time_string
+            ($json->[0]->{created_at});
+        $state->{latest_timestamp} = $ts->to_unix_number
+            if not defined $state->{latest_timestamp} or
+               $state->{latest_timestamp} < $ts->to_unix_number;
 
         $_->{tld} = $tld for @$json;
         return Promise->all ([
@@ -317,6 +341,9 @@ sub get_h ($$%) {
         die "Server returns an unexpected response";
       }
     });
+  })->then (sub {
+    return 'done' if $args{signal}->aborted;
+    $state->{no_more_older} = 1;
   })->finally (sub {
     return $client->close;
   }));
