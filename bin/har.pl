@@ -26,6 +26,15 @@ my $timer = AE::timer $CountInterval, $CountInterval, sub {
   reset_count;
 };
 
+sub debug_req ($) {
+  my $req = shift;
+  if ($ENV{DEBUG}) {
+    print STDERR "\r", $req->{url}->stringify if defined $req->{url};
+    print STDERR "\r", join ("/", @{$req->{path}}) if defined $req->{path};
+  }
+  return %$req;
+} # debug_req
+
 sub with_retry ($$) {
   my $code = shift;
   my $signal = shift;
@@ -94,29 +103,48 @@ my $Graphs = {};
   sub index_target (%);
   sub index_target (%) {
     my %args = @_;
-    
+
+    my $word;
     if (defined $args{url_name}) {
       validate_name $args{url_name};
-      if ($args{url_name} =~ m{\@(?:h|asin|http)$}) {
-        $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$args{word}};
-        $Indexes->{keywords}->{word}->{$args{word}}->{url_name} = $args{url_name};
-        $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
+      if ($args{url_name} =~ m{\@(?:h)$}) {
+        $word = $args{word} // $args{title};
+        $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+        $Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
+        $Indexes->{keywords}->{word}->{$word}->{word} = $word;
+        $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word} = $word;
+      } elsif ($args{url_name} =~ m{\@(?:asin|http)$}) {
+        if (defined $args{word}) {
+          $word = $args{word};
+          $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+          $Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
+          $Indexes->{keywords}->{word}->{$word}->{word} = $word;
+          $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word} = $word;
+          delete $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{sample};
+        } else {
+          unless (defined $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word}) {
+            $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{sample} = $args{eidtld}
+                if defined $args{eidtld};
+          }
+          return;
+        }
       } else {
         index_user url_name => $args{url_name};
         return;
       }
     } else {
-      $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$args{word}};
-      $Indexes->{keywords}->{word}->{$args{word}}->{word} = $args{word};
+      $word = $args{word};
+      $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+      $Indexes->{keywords}->{word}->{$word}->{word} = $word;
     }
 
     for (qw(followers_count entry_count entry_count_jp entry_count_com)) {
-      $Indexes->{keywords}->{word}->{$args{word}}->{$_} = $args{$_} if defined $args{$_};
+      $Indexes->{keywords}->{word}->{$word}->{$_} = $args{$_} if defined $args{$_};
     }
 
     for (@{$args{related_keywords} or []}) {
       index_target word => $_;
-      $Graphs->{related_keyword}->{$args{word}}->{$_} = 1;
+      $Graphs->{related_keyword}->{$word}->{$_} = 1;
     }
   } # index_target
 
@@ -138,12 +166,12 @@ my $Graphs = {};
         = [$args{timestamp}, $args{child_user}, $args{parent_user}];
   } # index_reply_entry
 
-  my $IndexNames = [qw(entries
-                       users keywords misc
-                       public_entries_jp public_entries_com
-                       user_entries_jp target_entries_jp
-                       user_entries_com target_entries_com
-                       reply_entries)];
+  my $TargetIndexNames = [qw(users keywords misc target_url_names)];
+  my $ThreadIndexNames = [qw(entries
+                             public_entries_jp public_entries_com
+                             user_entries_jp target_entries_jp
+                             user_entries_com target_entries_com
+                             reply_entries)];
 
   sub load_indexes () {
     return promised_for {
@@ -157,16 +185,24 @@ my $Graphs = {};
       })->then (sub {
         $Indexes->{$name} = $_[0];
       });
-    } $IndexNames;
+    } [@$TargetIndexNames, @$ThreadIndexNames];
   } # load_indexes
 
-  sub save_indexes () {
+  sub save_target_indexes () {
     return promised_for {
       my $name = shift;
       my $path = $DataPath->child ('indexes', $name . '.json');
       return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
-    } $IndexNames;
-  } # save_indexes
+    } $TargetIndexNames;
+  } # save_target_indexes
+
+  sub save_thread_indexes () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('indexes', $name . '.json');
+      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
+    } $ThreadIndexNames;
+  } # save_thread_indexes
 }
 
 {
@@ -226,7 +262,8 @@ sub save_h_entries ($) {
         followers_count => $item->{user}->{followers_count};
     index_target
         url_name => $item->{target}->{url_name},
-        word => $item->{target}->{word}
+        word => $item->{target}->{word},
+        title => $item->{target}->{title}
         if defined $item->{target}->{word};
     index_target
         word => $item->{source} if defined $item->{source};
@@ -296,11 +333,12 @@ sub save_n_entries ($) {
         url_name => $item->{author}->{url_name};
     index_target
         url_name => $item->{target}->{url_name},
-        word => $item->{target}->{display_name}
+        title => $item->{target}->{display_name},
+        eidtld => [$item->{eid}, $item->{tld}]
         if defined $item->{target}->{display_name};
     index_target
         url_name => $item->{source_target}->{url_name},
-        word => $item->{source_target}->{display_name}
+        title => $item->{source_target}->{display_name}
         if defined $item->{source_target}->{display_name};
 
     if (defined $item->{reply_to_author}) {
@@ -365,14 +403,14 @@ sub get_h ($$%) {
     die "Bad type |$type|";
   }
   my $since;
+  return if $tld eq 'com' and $state->{no_more_older};
   if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
-    return if $tld eq 'com';
     $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
   }
   my $page = 1;
   return ((promised_until {
     return with_retry (sub {
-      return $client->request (
+      return $client->request (debug_req {
         path => [
           'api', 'statuses',
           ($type eq 'user' ? ($type . '_timeline', $args{name} . '.json')
@@ -385,7 +423,7 @@ sub get_h ($$%) {
           ($type eq 'keyword' ? (word => $args{word}) : ()),
           since => $since,
         },
-      )->then (sub {
+      })->then (sub {
         my $res = $_[0];
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
@@ -427,8 +465,24 @@ sub get_n ($%) {
   my ($type, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  die "Bad type |$type|" unless $type eq 'user' or $type eq 'public';
+  my $state;
+  if ($type eq 'user') {
+    $state = $Indexes->{users}->{url_names}->{$args{name}}->{n} ||= {};
+  } elsif ($type eq 'user2') {
+    $state = $Indexes->{users}->{url_names}->{$args{name}}->{n2} ||= {};
+  } elsif ($type eq 'public') {
+    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
+  } else {
+    die "Bad type |$type|";
+  }
+  return if $type eq 'user2' and $state->{no_more_newer};
   my $req = $type eq 'user' ? {
+    path => [$args{name}, 'index.json'],
+    params => {
+      per_page => 200,
+      order => 'asc',
+    },
+  } : $type eq 'user2' ? {
     path => [$args{name}, 'index.json'],
     params => {
       location => q<http://h2.hatena.ne.jp/>,
@@ -443,14 +497,6 @@ sub get_n ($%) {
       order => 'asc',
     },
   } : die;
-  my $state;
-  if ($type eq 'user') {
-    $state = $Indexes->{$type eq 'user' ? 'users' : die}->{url_names}->{$args{name}}->{n} ||= {};
-  } elsif ($type eq 'public') {
-    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
-  } else {
-    die "Bad type |$type|";
-  }
   if (defined $state->{newer_url}) {
     $req = {url => Web::URL->parse_string ($state->{newer_url})};
   }
@@ -458,6 +504,7 @@ sub get_n ($%) {
   return ((promised_until {
     my $time = time;
     return with_retry (sub {
+      debug_req $req;
       return $client->request (%$req)->then (sub {
         my $res = $_[0];
         die $res unless $res->status == 200;
@@ -470,15 +517,15 @@ sub get_n ($%) {
         $state->{newer_url} = $json->{newer_url};
         $state->{last_checked} = $time;
         unless (@{$json->{items}}) {
-          $state->{no_more_older} = 1;
-          delete $state->{older_url};
+          $state->{no_more_newer} = 1 if $type eq 'user2';
           return 'done';
         }
 
         return Promise->all ([
           save_n_entries ($json->{items}),
         ])->then (sub {
-          print STDERR "*";
+          my $ts = Web::DateTime->new_from_unix_time ($json->{items}->[-1]->{created_on});
+          print STDERR "\x0D" . $ts->to_global_date_and_time_string;
           return 'done' if $args{signal}->aborted;
           $req = {
             url => Web::URL->parse_string ($json->{newer_url}),
@@ -486,7 +533,9 @@ sub get_n ($%) {
           $n++;
           return 'done' if $n > 20 and not $type eq 'public';
           return 'done' if $n > 900000 and $type eq 'public';
-          return not 'done';
+          return save ()->then (sub {
+            return not 'done';
+          });
         });
       } else {
         die "Server returns an unexpected response";
@@ -508,7 +557,7 @@ sub get_users ($$%) {
   my $page = 1;
   return ((promised_until {
     return with_retry (sub {
-      return $client->request (
+      return $client->request (debug_req {
         path => [
           'api', 'statuses',
           ({
@@ -520,7 +569,7 @@ sub get_users ($$%) {
         params => {
           page => $page,
         },
-      )->then (sub {
+      })->then (sub {
         my $res = $_[0];
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
@@ -566,7 +615,7 @@ sub get_favorite_keywords ($%) {
   my $prev_count = 0;
   return ((promised_until {
     return with_retry (sub {
-      return $client->request (
+      return $client->request (debug_req {
         path => [
           'api', 'statuses',
           'keywords',
@@ -575,7 +624,7 @@ sub get_favorite_keywords ($%) {
         params => {
           page => $page,
         },
-      )->then (sub {
+      })->then (sub {
         my $res = $_[0];
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
@@ -617,6 +666,51 @@ sub get_favorite_keywords ($%) {
   }));
 } # get_favorite_keywords
 
+sub get_entry ($$$) {
+  my ($tld, $eid, $signal) = @_;
+  my $client = Web::Transport::BasicClient->new_from_url
+      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  return ((promised_until {
+    return with_retry (sub {
+      return $client->request (debug_req {
+        path => ['api', 'statuses', 'show', $eid . '.json'],
+        params => {
+          body_formats => 'haiku',
+        },
+      })->then (sub {
+        my $res = $_[0];
+        die $res unless $res->status == 200;
+        return json_bytes2perl $res->body_bytes;
+      });
+    }, $signal)->then (sub {
+      my $json = $_[0];
+      return 'done' if $signal->aborted and not defined $json;
+      if (ref $json eq 'HASH') {
+        $json->{tld} = $tld;
+        return Promise->all ([
+          save_h_entries ([$json]),
+        ])->then (sub {
+          return 'done';
+        });
+      } else {
+        die "Server returns an unexpected response";
+      }
+    });
+  })->finally (sub {
+    return $client->close;
+  }));
+} # get_entry
+
+sub get_target_entries ($) {
+  my $signal = shift;
+  return promised_for {
+    my $item = shift;
+    if (defined $item->{sample}) { # [eid, tld]
+      return get_entry ($item->{sample}->[1], $item->{sample}->[0], $signal);
+    }
+  } [values %{$Indexes->{target_url_names}->{url_names}}];
+} # get_target_entries
+
 sub load () {
   return Promise->all ([
     load_indexes,
@@ -626,10 +720,17 @@ sub load () {
 
 sub save () {
   return Promise->all ([
-    save_indexes,
+    save_target_indexes,
     save_graphs,
   ]);
 } # save
+
+sub save_all () {
+  return Promise->all ([
+    save,
+    save_thread_indexes,
+  ]);
+} # save_all
 
 sub run ($) {
   my $code = shift;
@@ -638,7 +739,7 @@ sub run ($) {
   return load->then (sub {
     return $code->();
   })->then (sub {
-    return save;
+    return save_all;
   })->then (sub {
     my $end = time;
     warn sprintf "\nElapsed: %ds\n", $end - $start;
@@ -665,18 +766,18 @@ sub user ($$) {
     return get_n ('user', name => $name, signal => $signal);
   })->then (sub {
     return if $signal->aborted;
+    return get_n ('user2', name => $name, signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return get_target_entries ($signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return get_h ('user', 'com', name => $name, signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
     return save;
   });
   #return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
-  #  return if $signal->aborted;
-  #  return save;
-  #})->then (sub {
-  #  return if $signal->aborted;
-  #  return get_h ('user', 'com', name => $name, signal => $signal);
-  #})->then (sub {
-  #  return if $signal->aborted;
-  #  return save;
-  #});
 } # user
 
 sub keyword ($$) {
@@ -726,6 +827,9 @@ sub public ($) {
   return Promise->resolve->then (sub {
     #return get_h ('public', 'jp', signal => $signal);
     return get_n ('public', signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return get_target_entries ($signal);
   })->then (sub {
     return if $signal->aborted;
     return get_h ('public', 'com', signal => $signal);
