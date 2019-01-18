@@ -116,7 +116,7 @@ my $Graphs = {};
         #$Indexes->{keywords}->{word}->{$word}->{word} = $word;
       } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
         #$Counts->{keywords}++ unless defined $Indexes->{asin}->{$1};
-        $Indexes->{asin}->{$1} = 1;
+        #$Indexes->{asin}->{$1} = 1;
       } elsif ($args{url_name} =~ m{\@(?:http)$}) {
         if (defined $args{word}) {
           #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
@@ -169,7 +169,7 @@ my $Graphs = {};
   } # index_reply_entry
 
   my $TargetIndexNames = [qw(users
-                             asin http http_url_name keyword_info)]; # keywords
+                             http http_url_name keyword_info)]; # keywords asin
   my $ThreadIndexNames = [qw(entries
                              public_entries_jp public_entries_com
                              user_entries_jp target_entries_jp
