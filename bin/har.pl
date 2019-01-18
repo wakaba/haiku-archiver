@@ -17,8 +17,8 @@ my $DataPath = path (__FILE__)->parent->parent->child ('data');
 
 my $Counts = {entries => 0, users => 0, keywords => 0};
 sub reset_count () {
-  warn sprintf "\nNew entries: %d, users: %d, keywords: %d\n",
-      $Counts->{entries}, $Counts->{users}, $Counts->{keywords};
+  warn sprintf "\nNew entries: %d, users: %d\n",
+      $Counts->{entries}, $Counts->{users};
   $Counts = {entries => 0, users => 0, keywords => 0};
 } # reset_count
 my $CountInterval = 60;
@@ -65,8 +65,10 @@ sub sleeper ($$) {
   return sub {
     return if $signal->aborted;
     if (($n % 20) == 0) {
+      warn "Sleep (75)\n" if $ENV{DEBUG};
       return promised_sleep 75;
     } elsif (($n % 10) == 0) {
+      warn "Sleep (25)\n" if $ENV{DEBUG};
       return promised_sleep 25;
     } else {
       return promised_sleep 5;
@@ -109,21 +111,21 @@ my $Graphs = {};
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h)$}) {
         $word = $args{word} // $args{title};
-        $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-        $Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
-        $Indexes->{keywords}->{word}->{$word}->{word} = $word;
-        $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word} = $word;
-      } elsif ($args{url_name} =~ m{\@(?:asin|http)$}) {
+        #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+        #$Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
+        #$Indexes->{keywords}->{word}->{$word}->{word} = $word;
+      } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
+        #$Counts->{keywords}++ unless defined $Indexes->{asin}->{$1};
+        $Indexes->{asin}->{$1} = 1;
+      } elsif ($args{url_name} =~ m{\@(?:http)$}) {
         if (defined $args{word}) {
-          $word = $args{word};
-          $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-          $Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
-          $Indexes->{keywords}->{word}->{$word}->{word} = $word;
-          $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word} = $word;
-          delete $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{sample};
+          #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+          $Indexes->{http}->{$args{word}} = $args{url_name};
+          $Indexes->{http_url_name}->{$args{url_name}}->{word} = $args{word};
+          delete $Indexes->{http_url_name}->{$args{url_name}}->{sample};
         } else {
-          unless (defined $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{word}) {
-            $Indexes->{target_url_names}->{url_names}->{$args{url_name}}->{sample} = $args{eidtld}
+          unless (defined $Indexes->{http_url_name}->{$args{url_name}}->{word}) {
+            $Indexes->{http_url_name}->{$args{url_name}}->{sample} = $args{eidtld}
                 if defined $args{eidtld};
           }
           return;
@@ -134,12 +136,12 @@ my $Graphs = {};
       }
     } else {
       $word = $args{word};
-      $Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-      $Indexes->{keywords}->{word}->{$word}->{word} = $word;
+      #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
+      #$Indexes->{keywords}->{word}->{$word}->{word} = $word;
     }
 
     for (qw(followers_count entry_count entry_count_jp entry_count_com)) {
-      $Indexes->{keywords}->{word}->{$word}->{$_} = $args{$_} if defined $args{$_};
+      $Indexes->{keyword_info}->{$word}->{$_} = $args{$_} if defined $args{$_};
     }
 
     for (@{$args{related_keywords} or []}) {
@@ -151,22 +153,23 @@ my $Graphs = {};
   sub index_entry (%) {
     my %args = @_;
     $Counts->{entries}++ unless defined $Indexes->{entries}->{eid}->{$args{eid}};
-    $Indexes->{entries}->{eid}->{$args{eid}} = [$args{timestamp}, $args{user}];
+    #$Indexes->{entries}->{eid}->{$args{eid}} = [$args{timestamp}, $args{user}];
   } # index_entry
 
   sub index_thread_entry (%) {
     my %args = @_;
-    $Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{tld}}->{$args{eid}}
-        = [$args{timestamp}, $args{user}];
+    #$Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{tld}}->{$args{eid}}
+    #    = [$args{timestamp}, $args{user}];
   } # index_thread_entry
 
   sub index_reply_entry (%) {
     my %args = @_;
-    $Indexes->{'reply_entries'}->{children}->{$args{parent_eid}}->{$args{child_eid}}
-        = [$args{timestamp}, $args{child_user}, $args{parent_user}];
+    #$Indexes->{'reply_entries'}->{children}->{$args{parent_eid}}->{$args{child_eid}}
+    #    = [$args{timestamp}, $args{child_user}, $args{parent_user}];
   } # index_reply_entry
 
-  my $TargetIndexNames = [qw(users keywords misc target_url_names)];
+  my $TargetIndexNames = [qw(users
+                             asin http http_url_name keyword_info)]; # keywords
   my $ThreadIndexNames = [qw(entries
                              public_entries_jp public_entries_com
                              user_entries_jp target_entries_jp
@@ -206,6 +209,81 @@ my $Graphs = {};
 }
 
 {
+  my $States = {};
+  my $StateNames = [qw(user keyword asin http public)];
+  
+  sub load_states () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('states', $name . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      return $file->is_file->then (sub {
+        return {} unless $_[0];
+        return $file->read_byte_string->then
+            (sub { return json_bytes2perl $_[0] });
+      })->then (sub {
+        $States->{$name} = $_[0];
+      });
+    } $StateNames;
+  } # load_states
+
+  sub save_states () {
+    return promised_for {
+      my $name = shift;
+      my $path = $DataPath->child ('states', $name . '.json');
+      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $States->{$name});
+    } $StateNames;
+  } # save_states
+
+  sub state_h ($$;%) {
+    my ($type, $tld, %args) = @_;
+    my $state;
+    if ($type eq 'user') {
+      $state = $States->{user}->{$args{name}}->{'h_' . $tld} ||= {};
+    } elsif ($type eq 'keyword') {
+      if ($args{word} =~ /^asin:/i) {
+        $state = $States->{asin}->{$args{word}}->{'h_' . $tld} ||= {};
+      } elsif ($args{word} =~ /^http:/i) {
+        $state = $States->{http}->{$args{word}}->{'h_' . $tld} ||= {};
+      } else {
+        $state = $States->{keyword}->{$args{word}}->{'h_' . $tld} ||= {};
+      }
+    } elsif ($type eq 'public') {
+      $state = $States->{public}->{'h_' . $tld} ||= {};
+    } else {
+      die "Bad type |$type|";
+    }
+    return $state;
+  } # state_h
+
+  sub state_n ($;%) {
+    my ($type, %args) = @_;
+    my $state;
+    if ($type eq 'user') {
+      $state = $States->{user}->{$args{name}}->{n} ||= {};
+    } elsif ($type eq 'user2') {
+      $state = $States->{user}->{$args{name}}->{n2} ||= {};
+    } elsif ($type eq 'public') {
+      $state = $States->{public}->{n_jp} ||= {};
+    } else {
+      die "Bad type |$type|";
+    }
+    return $state;
+  } # state_n
+
+  sub state_graph ($;%) {
+    my ($type, %args) = @_;
+    my $state;
+    if ($type eq 'user') {
+      $state = $States->{user}->{$args{name}}->{graph} ||= {};
+    } else {
+      die "Bad type |$type|";
+    }
+    return $state;
+  } # state_graph
+}
+
+{
   my $GraphNames = [qw(favorite_user fan_user favorite_keyword
                        related_keyword)];
   
@@ -222,7 +300,7 @@ my $Graphs = {};
         $Graphs->{$name} = $_[0];
       });
     } $GraphNames;
-  } # load_hraphs
+  } # load_graphs
 
   sub save_graphs () {
     return promised_for {
@@ -392,16 +470,7 @@ sub get_h ($$%) {
   my ($type, $tld, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
-  my $state;
-  if ($type eq 'user') {
-    $state = $Indexes->{users}->{url_names}->{$args{name}}->{'h_' . $tld} ||= {};
-  } elsif ($type eq 'keyword') {
-    $state = $Indexes->{keywords}->{word}->{$args{word}}->{'h_' . $tld} ||= {};
-  } elsif ($type eq 'public') {
-    $state = $Indexes->{misc}->{public}->{'h_' . $tld} ||= {};
-  } else {
-    die "Bad type |$type|";
-  }
+  my $state = state_h $type, $tld, name => $args{name}, word => $args{word};
   my $since;
   return if $tld eq 'com' and $state->{no_more_older};
   if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
@@ -465,16 +534,7 @@ sub get_n ($%) {
   my ($type, %args) = @_;
   my $client = Web::Transport::BasicClient->new_from_url
       (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $state;
-  if ($type eq 'user') {
-    $state = $Indexes->{users}->{url_names}->{$args{name}}->{n} ||= {};
-  } elsif ($type eq 'user2') {
-    $state = $Indexes->{users}->{url_names}->{$args{name}}->{n2} ||= {};
-  } elsif ($type eq 'public') {
-    $state = $Indexes->{misc}->{public}->{n_jp} ||= {};
-  } else {
-    die "Bad type |$type|";
-  }
+  my $state = state_n $type, name => $args{name};
   return if $type eq 'user2' and $state->{no_more_newer};
   my $req = $type eq 'user' ? {
     path => [$args{name}, 'index.json'],
@@ -542,6 +602,7 @@ sub get_n ($%) {
       }
     });
   })->finally (sub {
+    warn "get_n done\n" if $ENV{DEBUG};
     return $client->close;
   }));
 } # get_n
@@ -549,7 +610,8 @@ sub get_n ($%) {
 sub get_users ($$%) {
   my ($type, %args) = @_;
 
-  my $ts = $Indexes->{users}->{url_names}->{$args{name}}->{$type . '_user_updated'};
+  my $state = state_graph 'user', name => $args{name};
+  my $ts = $state->{$type . '_user_updated'};
   return if defined $ts;
   
   my $client = Web::Transport::BasicClient->new_from_url
@@ -597,7 +659,7 @@ sub get_users ($$%) {
     });
   })->then (sub {
     return if $args{signal}->aborted;
-    $Indexes->{users}->{url_names}->{$args{name}}->{$type . '_user_updated'} = time;
+    $state->{$type . '_user_updated'} = time;
   })->then (sub {
     return $client->close;
   }));
@@ -606,7 +668,8 @@ sub get_users ($$%) {
 sub get_favorite_keywords ($%) {
   my (%args) = @_;
 
-  my $ts = $Indexes->{users}->{url_names}->{$args{name}}->{favorite_keyword_updated};
+  my $state = state_graph 'user', name => $args{name};
+  my $ts = $state->{favorite_keyword_updated};
   return if defined $ts;
   
   my $client = Web::Transport::BasicClient->new_from_url
@@ -660,7 +723,7 @@ sub get_favorite_keywords ($%) {
     });
   })->then (sub {
     return if $args{signal}->aborted;
-    $Indexes->{users}->{url_names}->{$args{name}}->{favorite_keyword_updated} = time;
+    $state->{favorite_keyword_updated} = time;
   })->then (sub {
     return $client->close;
   }));
@@ -704,17 +767,19 @@ sub get_entry ($$$) {
 sub get_target_entries ($) {
   my $signal = shift;
   return promised_for {
-    my $item = shift;
+    my $url_name = shift;
+    my $item = $Indexes->{http_url_name}->{$url_name};
     if (defined $item->{sample}) { # [eid, tld]
       return get_entry ($item->{sample}->[1], $item->{sample}->[0], $signal);
     }
-  } [values %{$Indexes->{target_url_names}->{url_names}}];
+  } [keys %{$Indexes->{http_url_name} or {}}];
 } # get_target_entries
 
 sub load () {
   return Promise->all ([
     load_indexes,
     load_graphs,
+    load_states,
   ]);
 } # load
 
@@ -722,6 +787,7 @@ sub save () {
   return Promise->all ([
     save_target_indexes,
     save_graphs,
+    save_states,
   ]);
 } # save
 
@@ -851,22 +917,20 @@ sub auto ($) {
       my $last_checked = time;
       my $min_done_last_checked = time - 24*60*60;
       for my $x (keys %{$Indexes->{users}->{url_names}}) {
-        if (not defined $Indexes->{users}->{url_names}->{$x}->{n}->{last_checked}) {
+        my $state = state_n 'user', $x;
+        if (not defined $state->{n}->{last_checked}) {
           $name = $x;
           last;
-        } elsif ($Indexes->{users}->{url_names}->{$x}->{n}->{last_checked} >= $min_done_last_checked) {
+        } elsif ($state->{n}->{last_checked} >= $min_done_last_checked) {
           #
-        } elsif ($Indexes->{users}->{url_names}->{$x}->{n}->{last_checked} < $last_checked) {
-          $last_checked = $Indexes->{users}->{url_names}->{$x}->{n}->{last_checked};
+        } elsif ($state->{n}->{last_checked} < $last_checked) {
+          $last_checked = $state->{n}->{last_checked};
           $name = $x;
         }
       }
       return 'done' unless defined $name;
 
-      my $all = 0+@{[grep {
-        not defined $Indexes->{users}->{url_names}->{$_}->{n}->{last_checked} or
-        $Indexes->{users}->{url_names}->{$_}->{n}->{last_checked} < $min_done_last_checked;
-      } keys %{$Indexes->{users}->{url_names}}]};
+      my $all = 0+keys %{$Indexes->{users}->{url_names}};
       
       print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
       return user ($name, $signal)->then (sleeper $n, $signal);
