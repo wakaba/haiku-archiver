@@ -105,7 +105,7 @@ my $Graphs = {};
   {
     my $path = $DataPath->child ('indexes', 'keywords.txt.orig');
     $path->parent->mkpath;
-    my $file = $path->opena;
+    my $file = $path->opena_utf8;
     sub index_target_keyword (%) {
       my %args = @_;
       my $word = $args{word};
