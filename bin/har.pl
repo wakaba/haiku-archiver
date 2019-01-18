@@ -14,12 +14,13 @@ use Web::DateTime;
 use Web::DateTime::Parser;
 
 my $DataPath = path (__FILE__)->parent->parent->child ('data');
+my $DEBUG = $ENV{DEBUG};
 
-my $Counts = {entries => 0, users => 0, keywords => 0};
+my $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
 sub reset_count () {
-  warn sprintf "\nNew entries: %d, users: %d\n",
-      $Counts->{entries}, $Counts->{users};
-  $Counts = {entries => 0, users => 0, keywords => 0};
+  warn sprintf "\nNew entries: %d, users: %d %s\n",
+      $Counts->{entries}, $Counts->{users}, scalar gmtime $Counts->{timestamp};
+  $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
 } # reset_count
 my $CountInterval = 60;
 my $timer = AE::timer $CountInterval, $CountInterval, sub {
@@ -28,7 +29,7 @@ my $timer = AE::timer $CountInterval, $CountInterval, sub {
 
 sub debug_req ($) {
   my $req = shift;
-  if ($ENV{DEBUG}) {
+  if ($DEBUG) {
     print STDERR "\r", $req->{url}->stringify if defined $req->{url};
     print STDERR "\r", join ("/", @{$req->{path}}) if defined $req->{path};
   }
@@ -65,10 +66,10 @@ sub sleeper ($$) {
   return sub {
     return if $signal->aborted;
     if (($n % 20) == 0) {
-      warn "Sleep (75)\n" if $ENV{DEBUG};
+      warn "Sleep (75)\n" if $DEBUG;
       return promised_sleep 75;
     } elsif (($n % 10) == 0) {
-      warn "Sleep (25)\n" if $ENV{DEBUG};
+      warn "Sleep (25)\n" if $DEBUG;
       return promised_sleep 25;
     } else {
       return promised_sleep 5;
@@ -84,7 +85,6 @@ sub validate_name ($) {
 my $Indexes = {};
 my $Graphs = {};
 {
-  
   sub index_user (%) {
     my %args = @_;
     
@@ -102,6 +102,20 @@ my $Graphs = {};
     }
   } # index_user
 
+  {
+    my $path = $DataPath->child ('indexes', 'keywords.txt.orig');
+    $path->parent->mkpath;
+    my $file = $path->opena;
+    sub index_target_keyword (%) {
+      my %args = @_;
+      my $word = $args{word};
+      $word =~ s/([^\x21-\x5B\x5D-\x7E\xA1-\x{10FFFF}])/sprintf "\\x{%04X}", ord $1/ge;
+      printf $file "%s %s\n",
+          $args{url_name},
+          $word;
+    } # index_target_keyword
+  }
+
   sub index_target (%);
   sub index_target (%) {
     my %args = @_;
@@ -112,8 +126,7 @@ my $Graphs = {};
       if ($args{url_name} =~ m{\@(?:h)$}) {
         $word = $args{word} // $args{title};
         #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-        #$Indexes->{keywords}->{word}->{$word}->{url_name} = $args{url_name};
-        #$Indexes->{keywords}->{word}->{$word}->{word} = $word;
+        index_target_keyword word => $word, url_name => $args{url_name};
       } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
         #$Counts->{keywords}++ unless defined $Indexes->{asin}->{$1};
         #$Indexes->{asin}->{$1} = 1;
@@ -150,31 +163,22 @@ my $Graphs = {};
     }
   } # index_target
 
-  sub index_entry (%) {
-    my %args = @_;
-    $Counts->{entries}++ unless defined $Indexes->{entries}->{eid}->{$args{eid}};
-    #$Indexes->{entries}->{eid}->{$args{eid}} = [$args{timestamp}, $args{user}];
-  } # index_entry
+  {
+    my $path = $DataPath->child ('indexes', 'entries.txt.orig');
+    $path->parent->mkpath;
+    my $file = $path->opena;
+    sub index_entry (%) {
+      my %args = @_;
+      $Counts->{entries}++;
+      printf $file "%010d %s/%s/%s %s %s/%s\n",
+          $args{timestamp},
+          $args{tld}, $args{user}, $args{eid},
+          $args{target},
+          $args{parent_user} // '', $args{parent_eid} // '';
+    } # index_entry
+  }
 
-  sub index_thread_entry (%) {
-    my %args = @_;
-    #$Indexes->{$args{type} . '_entries_' . $args{tld}}->{threads}->{$args{tld}}->{$args{eid}}
-    #    = [$args{timestamp}, $args{user}];
-  } # index_thread_entry
-
-  sub index_reply_entry (%) {
-    my %args = @_;
-    #$Indexes->{'reply_entries'}->{children}->{$args{parent_eid}}->{$args{child_eid}}
-    #    = [$args{timestamp}, $args{child_user}, $args{parent_user}];
-  } # index_reply_entry
-
-  my $TargetIndexNames = [qw(users
-                             http http_url_name keyword_info)]; # keywords asin
-  my $ThreadIndexNames = [qw(entries
-                             public_entries_jp public_entries_com
-                             user_entries_jp target_entries_jp
-                             user_entries_com target_entries_com
-                             reply_entries)];
+  my $IndexNames = [qw(users http http_url_name keyword_info)]; # keywords asin
 
   sub load_indexes () {
     return promised_for {
@@ -188,24 +192,16 @@ my $Graphs = {};
       })->then (sub {
         $Indexes->{$name} = $_[0];
       });
-    } [@$TargetIndexNames, @$ThreadIndexNames];
+    } [@$IndexNames];
   } # load_indexes
 
-  sub save_target_indexes () {
+  sub save_indexes () {
     return promised_for {
       my $name = shift;
       my $path = $DataPath->child ('indexes', $name . '.json');
       return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
-    } $TargetIndexNames;
-  } # save_target_indexes
-
-  sub save_thread_indexes () {
-    return promised_for {
-      my $name = shift;
-      my $path = $DataPath->child ('indexes', $name . '.json');
-      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
-    } $ThreadIndexNames;
-  } # save_thread_indexes
+    } $IndexNames;
+  } # save_indexes
 }
 
 {
@@ -350,48 +346,19 @@ sub save_h_entries ($) {
       index_user
           url_name => $item->{in_reply_to_user_id};
     }
-    if (length $item->{in_reply_to_status_id}) {
-      index_reply_entry
-          parent_user => $item->{user}->{screen_name},
-          parent_eid => $item->{id},
-          child_user => $item->{in_reply_to_user_id},
-          child_eid => $item->{in_reply_to_status_id},
-          timestamp => $ts->to_unix_number;
-    }
     for (@{$item->{replies}}) {
       index_user
           url_name => $_->{user}->{screen_name};
     }
 
-    index_thread_entry
-        tld => $item->{tld},
-        type => 'user',
-        name => $item->{user}->{screen_name},
-        user => $item->{user}->{screen_name},
-        eid => $item->{id},
-        timestamp => $ts->to_unix_number;
-    index_thread_entry
-        tld => $item->{tld},
-        type => 'target',
-        name => $item->{target}->{url_name},
-        user => $item->{user}->{screen_name},
-        eid => $item->{id},
-        timestamp => $ts->to_unix_number
-        if defined $item->{target}->{url_name};
-    if (defined $item->{target}->{url_name} and
-        $item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
-      index_thread_entry
-          tld => $item->{tld},
-          type => 'public',
-          user => $item->{user}->{screen_name},
-          eid => $item->{id},
-          timestamp => $ts->to_unix_number;
-    }
-
     index_entry
+        tld => $item->{tld},
         user => $item->{user}->{screen_name},
         eid => $item->{id},
-        timestamp => $ts->to_unix_number;
+        target => $item->{target}->{url_name},
+        timestamp => $ts->to_unix_number,
+        parent_user => $item->{in_reply_to_user_id},
+        parent_eid => $item->{in_reply_to_status_id};
 
     return write_entry $item->{user}->{screen_name}, $item->{id}, 'h', $item;
   } $items;
@@ -423,44 +390,15 @@ sub save_n_entries ($) {
       index_user
           url_name => $item->{reply_to_author}->{url_name};
     }
-    if (length $item->{reply_to_eid}) {
-      index_reply_entry
-          parent_user => $item->{author}->{url_name},
-          parent_eid => $item->{eid},
-          child_user => $item->{reply_to_author}->{url_name},
-          child_eid => $item->{reply_to_eid},
-          timestamp => $item->{created_on};
-    }
-
-    index_thread_entry
-        tld => $item->{tld},
-        type => 'user',
-        name => $item->{author}->{url_name},
-        user => $item->{author}->{url_name},
-        eid => $item->{eid},
-        timestamp => $item->{created_on};
-    index_thread_entry
-        tld => $item->{tld},
-        type => 'target',
-        name => $item->{target}->{url_name},
-        user => $item->{author}->{url_name},
-        eid => $item->{eid},
-        timestamp => $item->{created_on}
-        if defined $item->{target}->{url_name};
-    if (defined $item->{target}->{url_name} and
-        $item->{target}->{url_name} =~ m{\@(?:h|asin|http)$}) {
-      index_thread_entry
-          tld => $item->{tld},
-          type => 'public',
-          user => $item->{author}->{url_name},
-          eid => $item->{eid},
-          timestamp => $item->{created_on};
-    }
 
     index_entry
+        tld => $item->{tld},
         user => $item->{author}->{url_name},
         eid => $item->{eid},
-        timestamp => $item->{created_on};
+        target => $item->{target}->{url_name},
+        timestamp => $item->{created_on},
+        parent_user => $item->{reply_to_author}->{url_name},
+        parent_eid => $item->{reply_to_eid};
     
     return write_entry $item->{author}->{url_name}, $item->{eid}, 'n', $item;
   } $items;
@@ -584,8 +522,11 @@ sub get_n ($%) {
         return Promise->all ([
           save_n_entries ($json->{items}),
         ])->then (sub {
-          my $ts = Web::DateTime->new_from_unix_time ($json->{items}->[-1]->{created_on});
-          print STDERR "\x0D" . $ts->to_global_date_and_time_string;
+          if ($DEBUG) {
+            my $ts = Web::DateTime->new_from_unix_time ($json->{items}->[-1]->{created_on});
+            print STDERR "\x0D" . $ts->to_global_date_and_time_string;
+          }
+          $Counts->{timestamp} = $json->{items}->[-1]->{created_on};
           return 'done' if $args{signal}->aborted;
           $req = {
             url => Web::URL->parse_string ($json->{newer_url}),
@@ -602,7 +543,7 @@ sub get_n ($%) {
       }
     });
   })->finally (sub {
-    warn "get_n done\n" if $ENV{DEBUG};
+    warn "get_n done\n" if $DEBUG;
     return $client->close;
   }));
 } # get_n
@@ -785,18 +726,11 @@ sub load () {
 
 sub save () {
   return Promise->all ([
-    save_target_indexes,
+    save_indexes,
     save_graphs,
     save_states,
   ]);
 } # save
-
-sub save_all () {
-  return Promise->all ([
-    save,
-    save_thread_indexes,
-  ]);
-} # save_all
 
 sub run ($) {
   my $code = shift;
@@ -805,7 +739,7 @@ sub run ($) {
   return load->then (sub {
     return $code->();
   })->then (sub {
-    return save_all;
+    return save;
   })->then (sub {
     my $end = time;
     warn sprintf "\nElapsed: %ds\n", $end - $start;
