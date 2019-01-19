@@ -18,7 +18,7 @@ my $DEBUG = $ENV{DEBUG};
 
 my $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
 sub reset_count () {
-  warn sprintf "\nNew entries: %d, users: %d %s\n",
+  warn sprintf "\nEntries: %d, new users: %d %s\n",
       $Counts->{entries}, $Counts->{users}, scalar gmtime $Counts->{timestamp};
   $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
 } # reset_count
@@ -109,11 +109,14 @@ my $Graphs = {};
     sub index_target_keyword (%) {
       my %args = @_;
       my $word = $args{word};
-      $word =~ s/([^\x21-\x5B\x5D-\x7E\xA1-\x{10FFFF}])/sprintf "\\x{%04X}", ord $1/ge;
+      ## ^<https://chars.suikawiki.org/set?expr=-+%24unicode%3ANoncharacter_Code_Point+-+%24unicode%3AZ+-+%24unicode%3AWhite_Space+-+%24unicode%3Asurrogate+-+%24unicode%3ADefault_Ignorable_Code_Point+-+%24unicode%3AControl+-+%5B%5Cu005C%5D>
+      $word =~ s/([^!-\x5B\x5D-~\xA1-\xAC\xAE-\x{034E}\x{0350}-\x{061B}\x{061D}-\x{115E}\x{1161}-\x{167F}\x{1681}-\x{17B3}\x{17B6}-\x{180A}\x{180F}-\x{1FFF}\x{2010}-\x{2027}\x{2030}-\x{205E}\x{2070}-\x{2FFF}\x{3001}-\x{3163}\x{3165}-\x{D7FF}\x{E000}-\x{FDCF}\x{FDF0}-\x{FDFF}\x{FE10}-\x{FEFE}\x{FF00}-\x{FF9F}\x{FFA1}-\x{FFEF}\x{FFF9}-\x{FFFD}\x{10000}-\x{1BC9F}\x{1BCA4}-\x{1D172}\x{1D17B}-\x{1FFFD}\x{20000}-\x{2FFFD}\x{30000}-\x{3FFFD}\x{40000}-\x{4FFFD}\x{50000}-\x{5FFFD}\x{60000}-\x{6FFFD}\x{70000}-\x{7FFFD}\x{80000}-\x{8FFFD}\x{90000}-\x{9FFFD}\x{A0000}-\x{AFFFD}\x{B0000}-\x{BFFFD}\x{C0000}-\x{CFFFD}\x{D0000}-\x{DFFFD}\x{E1000}-\x{EFFFD}\x{F0000}-\x{FFFFD}\x{100000}-\x{10FFFD}])/sprintf "\\x{%04X}", ord $1/ge;
       printf $file "%s %s\n",
           $args{url_name},
           $word;
     } # index_target_keyword
+
+    sub close_target_keyword_index () { close $file }
   }
 
   sub index_target (%);
@@ -176,6 +179,8 @@ my $Graphs = {};
           $args{target},
           $args{parent_user} // '', $args{parent_eid} // '';
     } # index_entry
+
+    sub close_entry_index () { close $file }
   }
 
   my $IndexNames = [qw(users http http_url_name keyword_info)]; # keywords asin
@@ -202,6 +207,21 @@ my $Graphs = {};
       return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
     } $IndexNames;
   } # save_indexes
+
+  sub generate_sorted_indexes () {
+    {
+      close_entry_index;
+      my $path1 = $DataPath->child ('indexes', 'entries.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'entries.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+    {
+      close_target_keyword_index;
+      my $path1 = $DataPath->child ('indexes', 'keywords.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'keywords.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+  } # generate_sorted_indexes
 }
 
 {
@@ -740,6 +760,8 @@ sub run ($) {
     return $code->();
   })->then (sub {
     return save;
+  })->then (sub {
+    return generate_sorted_indexes;
   })->then (sub {
     my $end = time;
     warn sprintf "\nElapsed: %ds\n", $end - $start;
