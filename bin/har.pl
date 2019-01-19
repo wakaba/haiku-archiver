@@ -119,6 +119,23 @@ my $Graphs = {};
     sub close_target_keyword_index () { close $file }
   }
 
+  {
+    my $path = $DataPath->child ('indexes', 'https.txt.orig');
+    $path->parent->mkpath;
+    my $file = $path->opena_utf8;
+    sub index_target_http (%) {
+      my %args = @_;
+      my $word = $args{word};
+      ## ^<https://chars.suikawiki.org/set?expr=-+%24unicode%3ANoncharacter_Code_Point+-+%24unicode%3AZ+-+%24unicode%3AWhite_Space+-+%24unicode%3Asurrogate+-+%24unicode%3ADefault_Ignorable_Code_Point+-+%24unicode%3AControl+-+%5B%5Cu005C%5D>
+      $word =~ s/([^!-\x5B\x5D-~\xA1-\xAC\xAE-\x{034E}\x{0350}-\x{061B}\x{061D}-\x{115E}\x{1161}-\x{167F}\x{1681}-\x{17B3}\x{17B6}-\x{180A}\x{180F}-\x{1FFF}\x{2010}-\x{2027}\x{2030}-\x{205E}\x{2070}-\x{2FFF}\x{3001}-\x{3163}\x{3165}-\x{D7FF}\x{E000}-\x{FDCF}\x{FDF0}-\x{FDFF}\x{FE10}-\x{FEFE}\x{FF00}-\x{FF9F}\x{FFA1}-\x{FFEF}\x{FFF9}-\x{FFFD}\x{10000}-\x{1BC9F}\x{1BCA4}-\x{1D172}\x{1D17B}-\x{1FFFD}\x{20000}-\x{2FFFD}\x{30000}-\x{3FFFD}\x{40000}-\x{4FFFD}\x{50000}-\x{5FFFD}\x{60000}-\x{6FFFD}\x{70000}-\x{7FFFD}\x{80000}-\x{8FFFD}\x{90000}-\x{9FFFD}\x{A0000}-\x{AFFFD}\x{B0000}-\x{BFFFD}\x{C0000}-\x{CFFFD}\x{D0000}-\x{DFFFD}\x{E1000}-\x{EFFFD}\x{F0000}-\x{FFFFD}\x{100000}-\x{10FFFD}])/sprintf "\\x{%04X}", ord $1/ge;
+      printf $file "%s %s\n",
+          $args{url_name},
+          $word;
+    } # index_target_http
+
+    sub close_target_http_index () { close $file }
+  }
+
   sub index_target (%);
   sub index_target (%) {
     my %args = @_;
@@ -136,14 +153,8 @@ my $Graphs = {};
       } elsif ($args{url_name} =~ m{\@(?:http)$}) {
         if (defined $args{word}) {
           #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-          $Indexes->{http}->{$args{word}} = $args{url_name};
-          $Indexes->{http_url_name}->{$args{url_name}}->{word} = $args{word};
-          delete $Indexes->{http_url_name}->{$args{url_name}}->{sample};
+          index_target_http word => $args{word}, url_name => $args{url_name};
         } else {
-          unless (defined $Indexes->{http_url_name}->{$args{url_name}}->{word}) {
-            $Indexes->{http_url_name}->{$args{url_name}}->{sample} = $args{eidtld}
-                if defined $args{eidtld};
-          }
           return;
         }
       } else {
@@ -183,7 +194,7 @@ my $Graphs = {};
     sub close_entry_index () { close $file }
   }
 
-  my $IndexNames = [qw(users http http_url_name keyword_info)]; # keywords asin
+  my $IndexNames = [qw(users keyword_info)]; # keywords asin
 
   sub load_indexes () {
     return promised_for {
@@ -219,6 +230,12 @@ my $Graphs = {};
       close_target_keyword_index;
       my $path1 = $DataPath->child ('indexes', 'keywords.txt.orig');
       my $path2 = $DataPath->child ('indexes', 'keywords.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+    {
+      close_target_http_index;
+      my $path1 = $DataPath->child ('indexes', 'https.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'https.txt');
       `sort -u \Q$path1\E > \Q$path2\E`;
     }
   } # generate_sorted_indexes
@@ -398,8 +415,7 @@ sub save_n_entries ($) {
         url_name => $item->{author}->{url_name};
     index_target
         url_name => $item->{target}->{url_name},
-        title => $item->{target}->{display_name},
-        eidtld => [$item->{eid}, $item->{tld}]
+        title => $item->{target}->{display_name}
         if defined $item->{target}->{display_name};
     index_target
         url_name => $item->{source_target}->{url_name},
@@ -725,16 +741,42 @@ sub get_entry ($$$) {
   }));
 } # get_entry
 
-sub get_target_entries ($) {
+sub run_resolve_https ($) {
   my $signal = shift;
-  return promised_for {
-    my $url_name = shift;
-    my $item = $Indexes->{http_url_name}->{$url_name};
-    if (defined $item->{sample}) { # [eid, tld]
-      return get_entry ($item->{sample}->[1], $item->{sample}->[0], $signal);
+  return if $signal->aborted;
+
+  my $known = {};
+  {
+    my $known_txt_path = $DataPath->child ('indexes', 'https.txt');
+    if (-f $known_txt_path) {
+      my $file = $known_txt_path->openr;
+      while (<$file>) {
+        if (/^([0-9]+\@http) ./) {
+          $known->{$1} = 1;
+        }
+      }
     }
-  } [keys %{$Indexes->{http_url_name} or {}}];
-} # get_target_entries
+  }
+
+  return Promise->resolve->then (sub {
+    my $entries_txt_path = $DataPath->child ('indexes', 'entries.txt');
+    my $file = $entries_txt_path->openr;
+    return promised_until {
+      my $line = <$file>;
+      return 'done' if not defined $line;
+      return 'done' if $signal->aborted;
+      if ($line =~ m{^[0-9]+ (jp|com)/[^/]+/([0-9]+) ([0-9]+\@http) }) {
+        return not 'done' if $known->{$3};
+        my $url_name = $3;
+        
+        return get_entry ($1, $2, $signal)->then (sub {
+          $known->{$url_name} = 1;
+          return not 'done';
+        });
+      }
+    }
+  });
+} # run_resolve_https
 
 sub load () {
   return Promise->all ([
@@ -752,12 +794,17 @@ sub save () {
   ]);
 } # save
 
-sub run ($) {
+sub run ($$) {
   my $code = shift;
+  my $signal = shift;
   warn "Stop: Ctrl-C\n";
   my $start = time;
   return load->then (sub {
     return $code->();
+  })->then (sub {
+    return save;
+  })->then (sub {
+    return run_resolve_https ($signal);
   })->then (sub {
     return save;
   })->then (sub {
@@ -789,9 +836,6 @@ sub user ($$) {
   })->then (sub {
     return if $signal->aborted;
     return get_n ('user2', name => $name, signal => $signal);
-  })->then (sub {
-    return if $signal->aborted;
-    return get_target_entries ($signal);
   })->then (sub {
     return if $signal->aborted;
     return get_h ('user', 'com', name => $name, signal => $signal);
@@ -851,9 +895,6 @@ sub public ($) {
     return get_n ('public', signal => $signal);
   })->then (sub {
     return if $signal->aborted;
-    return get_target_entries ($signal);
-  })->then (sub {
-    return if $signal->aborted;
     return get_h ('public', 'com', signal => $signal);
   });
 } # public
@@ -909,27 +950,27 @@ sub main (@) {
     die "Usage: har $command name" unless length $name;
     run (sub {
       return user ($name, $signal);
-    });
+    }, $signal);
   } elsif ($command eq 'keyword') {
     my $word = decode_web_utf8 (shift // '');
     die "Usage: har $command word" unless length $word;
     run (sub {
       return keyword ($word, $signal);
-    });
+    }, $signal);
   } elsif ($command eq 'antenna') {
     my $name = shift // '';
     die "Usage: har $command name" unless length $name;
     run (sub {
       return antenna ($name, $signal);
-    });
+    }, $signal);
   } elsif ($command eq 'public') {
     run (sub {
       return public ($signal);
-    });
+    }, $signal);
   } elsif ($command eq 'auto') {
     run (sub {
       return auto ($signal);
-    });
+    }, $signal);
   } else {
     die "Usage: har command\n";
   }
