@@ -16,11 +16,11 @@ use Web::DateTime::Parser;
 my $DataPath = path (__FILE__)->parent->parent->child ('data');
 my $DEBUG = $ENV{DEBUG};
 
-my $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
+my $Counts = {entries => 0, timestamp => 0};
 sub reset_count () {
-  warn sprintf "\nEntries: %d, new users: %d %s\n",
-      $Counts->{entries}, $Counts->{users}, scalar gmtime $Counts->{timestamp};
-  $Counts = {entries => 0, users => 0, keywords => 0, timestamp => 0};
+  warn sprintf "\nEntries: %d %s\n",
+      $Counts->{entries}, scalar gmtime $Counts->{timestamp};
+  $Counts = {entries => 0, timestamp => 0};
 } # reset_count
 my $CountInterval = 60;
 my $timer = AE::timer $CountInterval, $CountInterval, sub {
@@ -82,25 +82,20 @@ sub validate_name ($) {
   die "Unexpected name |$name|" unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
 } # validate_name
 
-my $Indexes = {};
-my $Graphs = {};
 {
-  sub index_user (%) {
-    my %args = @_;
-    
-    validate_name $args{url_name};
+  {
+    my $path = $DataPath->child ('indexes', 'users.txt.orig');
+    $path->parent->mkpath;
+    my $file = $path->opena;
+    sub index_user (%) {
+      my %args = @_;
+      validate_name $args{url_name};
+      printf $file "%s\n",
+          $args{url_name};
+    } # index_user
 
-    $Counts->{users}++ unless defined $Indexes->{users}->{url_names}->{$args{url_name}};
-    
-    my $item = $Indexes->{users}->{url_names}->{$args{url_name}} ||= {};
-
-    if (defined $args{followers_count}) {
-      $item->{followers_count} = $args{followers_count};
-      if ($item->{followers_count} == 0) {
-        $Indexes->{users}->{url_names}->{$args{url_name}}->{fan_user_updated} //= time;
-      }
-    }
-  } # index_user
+    sub close_user_index () { close $file }
+  }
 
   {
     my $path = $DataPath->child ('indexes', 'keywords.txt.orig');
@@ -136,7 +131,6 @@ my $Graphs = {};
     sub close_target_http_index () { close $file }
   }
 
-  sub index_target (%);
   sub index_target (%) {
     my %args = @_;
 
@@ -145,14 +139,11 @@ my $Graphs = {};
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h)$}) {
         $word = $args{word} // $args{title};
-        #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
         index_target_keyword word => $word, url_name => $args{url_name};
       } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
-        #$Counts->{keywords}++ unless defined $Indexes->{asin}->{$1};
-        #$Indexes->{asin}->{$1} = 1;
+        #
       } elsif ($args{url_name} =~ m{\@(?:http)$}) {
         if (defined $args{word}) {
-          #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
           index_target_http word => $args{word}, url_name => $args{url_name};
         } else {
           return;
@@ -163,17 +154,6 @@ my $Graphs = {};
       }
     } else {
       $word = $args{word};
-      #$Counts->{keywords}++ unless defined $Indexes->{keywords}->{word}->{$word};
-      #$Indexes->{keywords}->{word}->{$word}->{word} = $word;
-    }
-
-    for (qw(followers_count entry_count entry_count_jp entry_count_com)) {
-      $Indexes->{keyword_info}->{$word}->{$_} = $args{$_} if defined $args{$_};
-    }
-
-    for (@{$args{related_keywords} or []}) {
-      index_target word => $_;
-      $Graphs->{related_keyword}->{$word}->{$_} = 1;
     }
   } # index_target
 
@@ -194,30 +174,28 @@ my $Graphs = {};
     sub close_entry_index () { close $file }
   }
 
-  my $IndexNames = [qw(users keyword_info)]; # keywords asin
-
-  sub load_indexes () {
-    return promised_for {
-      my $name = shift;
-      my $path = $DataPath->child ('indexes', $name . '.json');
-      my $file = Promised::File->new_from_path ($path);
-      return $file->is_file->then (sub {
-        return {} unless $_[0];
-        return $file->read_byte_string->then
-            (sub { return json_bytes2perl $_[0] });
-      })->then (sub {
-        $Indexes->{$name} = $_[0];
-      });
-    } [@$IndexNames];
-  } # load_indexes
-
-  sub save_indexes () {
-    return promised_for {
-      my $name = shift;
-      my $path = $DataPath->child ('indexes', $name . '.json');
-      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Indexes->{$name});
-    } $IndexNames;
-  } # save_indexes
+  sub generate_sorted_indexes_0 () {
+    {
+      my $path1 = $DataPath->child ('indexes', 'entries.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'entries.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+    {
+      my $path1 = $DataPath->child ('indexes', 'keywords.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'keywords.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+    {
+      my $path1 = $DataPath->child ('indexes', 'https.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'https.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+    {
+      my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'users.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+  } # generate_sorted_indexes_0
 
   sub generate_sorted_indexes () {
     {
@@ -238,12 +216,18 @@ my $Graphs = {};
       my $path2 = $DataPath->child ('indexes', 'https.txt');
       `sort -u \Q$path1\E > \Q$path2\E`;
     }
+    {
+      close_user_index;
+      my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'users.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
   } # generate_sorted_indexes
 }
 
 {
   my $States = {};
-  my $StateNames = [qw(user keyword asin http public)];
+  my $StateNames = [qw(keyword asin http public)];
   
   sub load_states () {
     return promised_for {
@@ -268,81 +252,113 @@ my $Graphs = {};
     } $StateNames;
   } # save_states
 
+  sub load_state_all ($) {
+    my $file = shift;
+    return $file->is_file->then (sub {
+      return {} unless $_[0];
+      return $file->read_byte_string->then (sub {
+        return json_bytes2perl $_[0];
+      });
+    })->then (sub {
+      my $state_all = $_[0];
+      return $state_all;
+    });
+  } # load_state_all
+
+  sub save_sh ($) {
+    my $sh = $_[0];
+    return Promise->all ([
+      (defined $sh->{file} ? $sh->{file}->write_byte_string (perl2json_bytes $sh->{all}) : undef),
+      (defined $sh->{graph_file} ? $sh->{graph_file}->write_byte_string (perl2json_bytes $sh->{graphs}) : undef),
+    ]);
+  } # save_sh
+
   sub state_h ($$;%) {
     my ($type, $tld, %args) = @_;
-    my $state;
+    my $all;
     if ($type eq 'user') {
-      $state = $States->{user}->{$args{name}}->{'h_' . $tld} ||= {};
+      validate_name $args{name};
+      my $path = $DataPath->child ('states', 'users', $args{name} . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      return load_state_all ($file)->then (sub {
+        my $all = $_[0];
+        return {state => $all->{'h_'.$tld} ||= {}, all => $all, file => $file};
+      });
     } elsif ($type eq 'keyword') {
       if ($args{word} =~ /^asin:/i) {
-        $state = $States->{asin}->{$args{word}}->{'h_' . $tld} ||= {};
+        $all = $States->{asin}->{$args{word}} ||= {};
       } elsif ($args{word} =~ /^http:/i) {
-        $state = $States->{http}->{$args{word}}->{'h_' . $tld} ||= {};
+        $all = $States->{http}->{$args{word}} ||= {};
       } else {
-        $state = $States->{keyword}->{$args{word}}->{'h_' . $tld} ||= {};
+        $all = $States->{keyword}->{$args{word}} ||= {};
       }
     } elsif ($type eq 'public') {
-      $state = $States->{public}->{'h_' . $tld} ||= {};
+      $all = $States->{public} ||= {};
     } else {
       die "Bad type |$type|";
     }
-    return $state;
+    return {state => $all->{'h_' . $tld} ||= {}};
   } # state_h
 
   sub state_n ($;%) {
     my ($type, %args) = @_;
-    my $state;
-    if ($type eq 'user') {
-      $state = $States->{user}->{$args{name}}->{n} ||= {};
-    } elsif ($type eq 'user2') {
-      $state = $States->{user}->{$args{name}}->{n2} ||= {};
+    if ($type eq 'user' or $type eq 'user2') {
+      validate_name $args{name};
+      my $path = $DataPath->child ('states', 'users', $args{name} . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      return load_state_all ($file)->then (sub {
+        my $all = $_[0];
+        return {state => $all->{$type eq 'user2' ? 'n2' : 'n'} ||= {},
+                all => $all, file => $file};
+      });
     } elsif ($type eq 'public') {
-      $state = $States->{public}->{n_jp} ||= {};
+      return {state => $States->{public}->{n_jp} ||= {}};
     } else {
       die "Bad type |$type|";
     }
-    return $state;
   } # state_n
 
   sub state_graph ($;%) {
     my ($type, %args) = @_;
-    my $state;
     if ($type eq 'user') {
-      $state = $States->{user}->{$args{name}}->{graph} ||= {};
+      validate_name $args{name};
+      my $path = $DataPath->child ('states', 'users', $args{name} . '.json');
+      my $file = Promised::File->new_from_path ($path);
+      my $graph_path = $DataPath->child ('graphs', 'users', $args{name} . '.json');
+      my $graph_file = Promised::File->new_from_path ($graph_path);
+      return load_state_all ($file)->then (sub {
+        my $all = $_[0];
+        return $graph_file->is_file->then (sub {
+          return {} unless $_[0];
+          return $graph_file->read_byte_string->then (sub {
+            return json_bytes2perl $_[0];
+          });
+        })->then (sub {
+          my $graphs = $_[0];
+          return {state => $all->{graph} ||= {},
+                  all => $all, file => $file,
+                  graphs => $graphs, graph_file => $graph_file};
+        });
+      });
     } else {
       die "Bad type |$type|";
     }
-    return $state;
   } # state_graph
 }
 
-{
-  my $GraphNames = [qw(favorite_user fan_user favorite_keyword
-                       related_keyword)];
-  
-  sub load_graphs () {
-    return promised_for {
-      my $name = shift;
-      my $path = $DataPath->child ('graphs', $name . '.json');
-      my $file = Promised::File->new_from_path ($path);
-      return $file->is_file->then (sub {
-        return {} unless $_[0];
-        return $file->read_byte_string->then
-            (sub { return json_bytes2perl $_[0] });
-      })->then (sub {
-        $Graphs->{$name} = $_[0];
-      });
-    } $GraphNames;
-  } # load_graphs
-
-  sub save_graphs () {
-    return promised_for {
-      my $name = shift;
-      my $path = $DataPath->child ('graphs', $name . '.json');
-      return Promised::File->new_from_path ($path)->write_byte_string (perl2json_bytes $Graphs->{$name});
-    } $GraphNames;
-  } # save_graphs
-}
+sub write_keyword ($) {
+  my $data = $_[0];
+  validate_name $data->{url_name};
+  my $type = 'id';
+  if ($data->{url_name} =~ /\@(\w+)$/) {
+    $type = $1;
+  }
+  my $path = $DataPath->child ('keywords', $type, $data->{url_name} . '.json');
+  my $file = Promised::File->new_from_path ($path);
+  return $file->is_file->then (sub {
+    return $file->write_byte_string (perl2json_bytes $data);
+  });
+} # write_keyword
 
 sub write_entry ($$$$) {
   my ($user, $eid, $type, $data) = @_;
@@ -369,8 +385,7 @@ sub save_h_entries ($) {
         ($item->{created_at});
 
     index_user
-        url_name => $item->{user}->{screen_name},
-        followers_count => $item->{user}->{followers_count};
+        url_name => $item->{user}->{screen_name};
     index_target
         url_name => $item->{target}->{url_name},
         word => $item->{target}->{word},
@@ -442,15 +457,20 @@ sub save_n_entries ($) {
 
 sub get_h ($$%) {
   my ($type, $tld, %args) = @_;
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
-  my $state = state_h $type, $tld, name => $args{name}, word => $args{word};
-  my $since;
-  return if $tld eq 'com' and $state->{no_more_older};
-  if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
-    $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
-  }
-  my $page = 1;
+  return Promise->resolve->then (sub {
+    return state_h $type, $tld, name => $args{name}, word => $args{word};
+  })->then (sub {
+    my $sh = $_[0];
+    my $state = $sh->{state};
+    my $since;
+    return if $tld eq 'com' and $state->{no_more_older};
+    return if $sh->{all}->{'404'};
+    if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
+      $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
+    }
+    my $client = Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
+    my $page = 1;
   return ((promised_until {
     return with_retry (sub {
       return $client->request (debug_req {
@@ -468,6 +488,8 @@ sub get_h ($$%) {
         },
       })->then (sub {
         my $res = $_[0];
+        $sh->{all}->{'404'} = 1 if $res->status == 404;
+        return [] if $res->status == 404;
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
@@ -499,17 +521,25 @@ sub get_h ($$%) {
   })->then (sub {
     return 'done' if $args{signal}->aborted;
     $state->{no_more_older} = 1;
+    return save_sh $sh;
   })->finally (sub {
     return $client->close;
   }));
+
+  });
 } # get_h
 
 sub get_n ($%) {
   my ($type, %args) = @_;
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $state = state_n $type, name => $args{name};
-  return if $type eq 'user2' and $state->{no_more_newer};
+  return Promise->resolve->then (sub {
+    return state_n $type, name => $args{name};
+  })->then (sub {
+    my $sh = $_[0];
+    my $state = $sh->{state};
+    return if $type eq 'user2' and $state->{no_more_newer};
+    return if $sh->{all}->{'404'};
+    my $client = Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
   my $req = $type eq 'user' ? {
     path => [$args{name}, 'index.json'],
     params => {
@@ -541,6 +571,8 @@ sub get_n ($%) {
       debug_req $req;
       return $client->request (%$req)->then (sub {
         my $res = $_[0];
+        $sh->{all}->{'404'} = 1 if $res->status == 404;
+        return {items => []} if $res->status == 404;
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
@@ -578,22 +610,29 @@ sub get_n ($%) {
         die "Server returns an unexpected response";
       }
     });
+  })->then (sub {
+    return save_sh $sh;
   })->finally (sub {
     warn "get_n done\n" if $DEBUG;
     return $client->close;
   }));
+
+  });
 } # get_n
 
 sub get_users ($$%) {
   my ($type, %args) = @_;
-
-  my $state = state_graph 'user', name => $args{name};
-  my $ts = $state->{$type . '_user_updated'};
-  return if defined $ts;
-  
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $page = 1;
+  return Promise->resolve->then (sub {
+    return state_graph 'user', name => $args{name};
+  })->then (sub {
+    my $sh = $_[0];
+    my $state = $sh->{state};
+    my $ts = $state->{$type . '_user_updated'};
+    return if defined $ts;
+    return if $sh->{all}->{'404'};
+    my $client = Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+    my $page = 1;
   return ((promised_until {
     return with_retry (sub {
       return $client->request (debug_req {
@@ -610,6 +649,8 @@ sub get_users ($$%) {
         },
       })->then (sub {
         my $res = $_[0];
+        $sh->{all}->{'404'} = 1 if $res->status == 404;
+        return [] if $res->status == 404;
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
@@ -619,12 +660,11 @@ sub get_users ($$%) {
       if (ref $json eq 'ARRAY') {
         return 'done' unless @$json;
 
-        for my $item (@$json) {
-          index_user
-              url_name => $item->{screen_name},
-              followers_count => $item->{followers_count};
-          $Graphs->{$type . '_user'}->{$args{name}}->{$item->{screen_name}} = 1;
-        }
+          for my $item (@$json) {
+            index_user
+                url_name => $item->{screen_name};
+            $sh->{graphs}->{$type . '_user'}->{$item->{screen_name}} = 1;
+          }
 
         return 'done' if $page++ > 100;
         print STDERR "*";
@@ -637,22 +677,28 @@ sub get_users ($$%) {
   })->then (sub {
     return if $args{signal}->aborted;
     $state->{$type . '_user_updated'} = time;
+    return save_sh $sh;
   })->then (sub {
     return $client->close;
   }));
+
+  });
 } # get_users
 
-sub get_favorite_keywords ($%) {
+sub get_favorite_keywords (%) {
   my (%args) = @_;
-
-  my $state = state_graph 'user', name => $args{name};
-  my $ts = $state->{favorite_keyword_updated};
-  return if defined $ts;
-  
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $page = 1;
-  my $prev_count = 0;
+  return Promise->resolve->then (sub {
+    return state_graph 'user', name => $args{name};
+  })->then (sub {
+    my $sh = $_[0];
+    my $state = $sh->{state};
+    my $ts = $state->{favorite_keyword_updated};
+    return if defined $ts;
+    return if $sh->{all}->{'404'};
+    my $client = Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+    my $page = 1;
+    my $prev_count = 0;
   return ((promised_until {
     return with_retry (sub {
       return $client->request (debug_req {
@@ -666,6 +712,8 @@ sub get_favorite_keywords ($%) {
         },
       })->then (sub {
         my $res = $_[0];
+        $sh->{all}->{'404'} = 1 if $res->status == 404;
+        return [] if $res->status == 404;
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
@@ -675,35 +723,32 @@ sub get_favorite_keywords ($%) {
       if (ref $json eq 'ARRAY') {
         return 'done' unless @$json;
 
-        for my $item (@$json) {
-          index_target
-              word => $item->{word},
-              url_name => $item->{url_name},
-              followers_count => $item->{followers_count},
-              entry_count => $item->{entry_count},
-              entry_count_jp => $item->{entry_count_jp},
-              entry_count_com => $item->{entry_count_com},
-              related_keywords => $item->{related_keywords};
-          $Graphs->{favorite_keyword}->{$args{name}}->{$item->{word}} = 1;
+          for my $item (@$json) {
+            $sh->{graphs}->{favorite_keyword}->{$item->{word}} = 1;
+          }
+          return ((promised_for {
+            return write_keyword $_[0]
+          } $json)->then (sub {
+            return 'done' if @$json != 100 and $prev_count == @$json;
+            $prev_count = @$json;
+
+            return 'done' if $page++ > 100;
+            print STDERR "*";
+            return 'done' if $args{signal}->aborted;
+            return not 'done';
+          }));
+        } else {
+          die "Server returns an unexpected response";
         }
-
-        return 'done' if @$json != 100 and $prev_count == @$json;
-        $prev_count = @$json;
-
-        return 'done' if $page++ > 100;
-        print STDERR "*";
-        return 'done' if $args{signal}->aborted;
-        return not 'done';
-      } else {
-        die "Server returns an unexpected response";
-      }
-    });
-  })->then (sub {
-    return if $args{signal}->aborted;
-    $state->{favorite_keyword_updated} = time;
-  })->then (sub {
-    return $client->close;
-  }));
+      });
+    })->then (sub {
+      return if $args{signal}->aborted;
+      $state->{favorite_keyword_updated} = time;
+      return save_sh $sh;
+    })->then (sub {
+      return $client->close;
+    }));
+  });
 } # get_favorite_keywords
 
 sub get_entry ($$$) {
@@ -719,12 +764,14 @@ sub get_entry ($$$) {
         },
       })->then (sub {
         my $res = $_[0];
+        return undef if $res->status == 404;
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
     }, $signal)->then (sub {
       my $json = $_[0];
       return 'done' if $signal->aborted and not defined $json;
+      return 'done' if not defined $json; # 404
       if (ref $json eq 'HASH') {
         $json->{tld} = $tld;
         return Promise->all ([
@@ -780,16 +827,12 @@ sub run_resolve_https ($) {
 
 sub load () {
   return Promise->all ([
-    load_indexes,
-    load_graphs,
     load_states,
   ]);
 } # load
 
 sub save () {
   return Promise->all ([
-    save_indexes,
-    save_graphs,
     save_states,
   ]);
 } # save
@@ -803,6 +846,8 @@ sub run ($$) {
     return $code->();
   })->then (sub {
     return save;
+  })->then (sub {
+    return generate_sorted_indexes_0;
   })->then (sub {
     return run_resolve_https ($signal);
   })->then (sub {
@@ -867,24 +912,30 @@ sub antenna ($$) {
     return user ($name, $signal);
   })->then (sub {
     return if $signal->aborted;
-    my $names = [keys %{$Graphs->{favorite_user}->{$name} or {}}];
-    my $n = 0;
-    return promised_for {
-      return if $signal->aborted;
-      my $name = shift;
-      print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, 0+@$names;
-      return user ($name, $signal)->then (sleeper $n, $signal);
-    } $names;
+    return state_graph 'user', name => $name;
   })->then (sub {
     return if $signal->aborted;
-    my $words = [keys %{$Graphs->{favorite_keyword}->{$name} or {}}];
-    my $n = 0;
-    return promised_for {
+    my $sh = $_[0];
+    return Promise->resolve->then (sub {
+      my $names = [keys %{$sh->{graphs}->{favorite_user} or {}}];
+      my $n = 0;
+      return promised_for {
+        return if $signal->aborted;
+        my $name = shift;
+        print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, 0+@$names;
+        return user ($name, $signal)->then (sleeper $n, $signal);
+      } $names;
+    })->then (sub {
       return if $signal->aborted;
-      my $word = shift;
-      print STDERR sprintf "\x0D%s\x0DKeyword %d/%d ", " " x 20, ++$n, 0+@$words;
-      return keyword ($word, $signal)->then (sleeper $n, $signal);
-    } $words;
+      my $words = [keys %{$sh->{graphs}->{favorite_keyword} or {}}];
+      my $n = 0;
+      return promised_for {
+        return if $signal->aborted;
+        my $word = shift;
+        print STDERR sprintf "\x0D%s\x0DKeyword %d/%d ", " " x 20, ++$n, 0+@$words;
+        return keyword ($word, $signal)->then (sleeper $n, $signal);
+      } $words;
+    });
   });
 } # antenna
 
@@ -903,34 +954,26 @@ sub auto ($) {
   my $signal = shift;
   return Promise->resolve->then (sub {
     return if $signal->aborted;
-    return public ($signal);
+#    return public ($signal);
   })->then (sub {
     return if $signal->aborted;
+    my $users_txt_path = $DataPath->child ('indexes', 'users.txt');
     my $n = 0;
-    return promised_wait {
+    my $all = 0;
+    {
+      my $file = $users_txt_path->openr;
+      $all++ while <$file>;
+    }
+    my $file = $users_txt_path->openr;
+    return promised_until {
+      my $line = <$file>;
+      return 'done' if not defined $line;
       return 'done' if $signal->aborted;
-
-      my $name;
-      my $last_checked = time;
-      my $min_done_last_checked = time - 24*60*60;
-      for my $x (keys %{$Indexes->{users}->{url_names}}) {
-        my $state = state_n 'user', $x;
-        if (not defined $state->{n}->{last_checked}) {
-          $name = $x;
-          last;
-        } elsif ($state->{n}->{last_checked} >= $min_done_last_checked) {
-          #
-        } elsif ($state->{n}->{last_checked} < $last_checked) {
-          $last_checked = $state->{n}->{last_checked};
-          $name = $x;
-        }
+      if ($line =~ m{^([0-9A-Za-z\@_-]+)$}) {
+        my $url_name = $1;
+        print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
+        return user ($url_name, $signal)->then (sleeper $n, $signal);
       }
-      return 'done' unless defined $name;
-
-      my $all = 0+keys %{$Indexes->{users}->{url_names}};
-      
-      print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
-      return user ($name, $signal)->then (sleeper $n, $signal);
     };
   });
 } # auto
