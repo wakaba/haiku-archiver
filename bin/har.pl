@@ -133,12 +133,10 @@ sub validate_name ($) {
 
   sub index_target (%) {
     my %args = @_;
-
-    my $word;
     if (defined $args{url_name}) {
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h)$}) {
-        $word = $args{word} // $args{title};
+        my $word = $args{word} // $args{title};
         index_target_keyword word => $word, url_name => $args{url_name};
       } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
         #
@@ -152,8 +150,6 @@ sub validate_name ($) {
         index_user url_name => $args{url_name};
         return;
       }
-    } else {
-      $word = $args{word};
     }
   } # index_target
 
@@ -167,7 +163,7 @@ sub validate_name ($) {
       printf $file "%010d %s/%s/%s %s %s/%s\n",
           $args{timestamp},
           $args{tld}, $args{user}, $args{eid},
-          $args{target},
+          $args{target} // '@',
           $args{parent_user} // '', $args{parent_eid} // '';
     } # index_entry
 
@@ -504,6 +500,9 @@ sub get_h ($$%) {
         $state->{latest_timestamp} = $ts->to_unix_number
             if not defined $state->{latest_timestamp} or
                $state->{latest_timestamp} < $ts->to_unix_number;
+        $state->{oldest_timestamp} = $ts->to_unix_number
+            if not defined $state->{oldest_timestamp} or
+               $ts->to_unix_number < $state->{oldest_timestamp};
 
         $_->{tld} = $tld for @$json;
         return Promise->all ([
@@ -521,6 +520,7 @@ sub get_h ($$%) {
   })->then (sub {
     return 'done' if $args{signal}->aborted;
     $state->{no_more_older} = 1;
+    $state->{can_have_more} = 1 if $page > 100;
     return save_sh $sh;
   })->finally (sub {
     return $client->close;
@@ -536,8 +536,9 @@ sub get_n ($%) {
   })->then (sub {
     my $sh = $_[0];
     my $state = $sh->{state};
-    return if $type eq 'user2' and $state->{no_more_newer};
     return if $sh->{all}->{'404'};
+    return if $type eq 'user2' and $state->{no_more_newer};
+    return if $type eq 'user2' and not $sh->{all}->{h_com}->{can_have_more};
     my $client = Web::Transport::BasicClient->new_from_url
         (Web::URL->parse_string ("http://h.hatena.ne.jp"));
   my $req = $type eq 'user' ? {
@@ -553,6 +554,7 @@ sub get_n ($%) {
       dccol => 'ugouser',
       per_page => 200,
       order => 'asc',
+      reftime => '+1291161600,0', # 2010-12-01
     },
   } : $type eq 'public' ? {
     path => ['index.json'],
@@ -595,13 +597,16 @@ sub get_n ($%) {
             print STDERR "\x0D" . $ts->to_global_date_and_time_string;
           }
           $Counts->{timestamp} = $json->{items}->[-1]->{created_on};
+          if ($type eq 'user2' and
+              $sh->{all}->{h_com}->{oldest_timestamp}< $Counts->{timestamp}) {
+            $state->{no_more_newer} = 1;
+            return 'done';
+          }
           return 'done' if $args{signal}->aborted;
           $req = {
             url => Web::URL->parse_string ($json->{newer_url}),
           };
           $n++;
-          return 'done' if $n > 20 and not $type eq 'public';
-          return 'done' if $n > 900000 and $type eq 'public';
           return save ()->then (sub {
             return not 'done';
           });
@@ -610,13 +615,11 @@ sub get_n ($%) {
         die "Server returns an unexpected response";
       }
     });
-  })->then (sub {
-    return save_sh $sh;
-  })->finally (sub {
-    warn "get_n done\n" if $DEBUG;
-    return $client->close;
-  }));
-
+    })->then (sub {
+      return save_sh $sh;
+    })->finally (sub {
+      return $client->close;
+    }));
   });
 } # get_n
 
@@ -880,10 +883,10 @@ sub user ($$) {
     return get_n ('user', name => $name, signal => $signal);
   })->then (sub {
     return if $signal->aborted;
-    return get_n ('user2', name => $name, signal => $signal);
+    return get_h ('user', 'com', name => $name, signal => $signal);
   })->then (sub {
     return if $signal->aborted;
-    return get_h ('user', 'com', name => $name, signal => $signal);
+    return get_n ('user2', name => $name, signal => $signal);
   })->then (sub {
     return if $signal->aborted;
     return save;
@@ -954,7 +957,8 @@ sub auto ($) {
   my $signal = shift;
   return Promise->resolve->then (sub {
     return if $signal->aborted;
-#    return public ($signal);
+    print STDERR "public skipped in debug mode\n" if $DEBUG;
+    return public ($signal) unless $DEBUG;
   })->then (sub {
     return if $signal->aborted;
     my $users_txt_path = $DataPath->child ('indexes', 'users.txt');
