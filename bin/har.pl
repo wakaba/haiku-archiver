@@ -18,7 +18,7 @@ my $DEBUG = $ENV{DEBUG};
 
 my $Counts = {entries => 0, timestamp => 0};
 sub reset_count () {
-  warn sprintf "\nEntries: %d %s\n",
+  print STDERR sprintf "\rEntries: %d %s",
       $Counts->{entries}, scalar gmtime $Counts->{timestamp};
   $Counts = {entries => 0, timestamp => 0};
 } # reset_count
@@ -36,46 +36,53 @@ sub debug_req ($) {
   return %$req;
 } # debug_req
 
-sub with_retry ($$) {
-  my $code = shift;
-  my $signal = shift;
-  my $return;
-  my $n = 0;
-  return ((promised_wait_until {
-    if ($signal->aborted) {
-      $return = undef;
-      return 'done';
-    }
-    return Promise->resolve->then ($code)->then (sub {
-      $return = $_[0];
-      return 'done';
-    }, sub {
-      my $e = $_[0];
-      die $e if $n++ > 5;
-      warn "Failed ($e); retrying ($n)...\n";
-      return not 'done';
-    });
-  })->then (sub {
-    return $return;
-  }));
-} # with_retry
+{
+  my $TryCount = 0;
 
-sub sleeper ($$) {
-  my $n = shift;
-  my $signal = shift;
-  return sub {
-    return if $signal->aborted;
-    if (($n % 20) == 0) {
-      warn "Sleep (75)\n" if $DEBUG;
-      return promised_sleep 75;
-    } elsif (($n % 10) == 0) {
-      warn "Sleep (25)\n" if $DEBUG;
-      return promised_sleep 25;
-    } else {
-      return promised_sleep 5;
-    }
-  };
-} # sleeper
+  sub with_retry ($$) {
+    my $code = shift;
+    my $signal = shift;
+    my $return;
+    my $n = 0;
+    return ((promised_wait_until {
+      if ($signal->aborted) {
+        $return = undef;
+        return 'done';
+      }
+      $TryCount++;
+      return Promise->resolve->then ($code)->then (sub {
+        $return = $_[0];
+        return 'done';
+      }, sub {
+        my $e = $_[0];
+        die $e if $n++ > 5;
+        warn "Failed ($e); retrying ($n)...\n";
+        return not 'done';
+      });
+    })->then (sub {
+      return $return;
+    }));
+  } # with_retry
+
+  my $PrevTryCount = 0;
+  sub sleeper ($) {
+    my $signal = shift;
+    return sub {
+      return if $signal->aborted;
+      return if $PrevTryCount == $TryCount;
+      $PrevTryCount = $TryCount;
+      if (($TryCount % 20) == 0) {
+        warn "Sleep (75)\n" if $DEBUG;
+        return promised_sleep 75;
+      } elsif (($TryCount % 10) == 0) {
+        warn "Sleep (25)\n" if $DEBUG;
+        return promised_sleep 25;
+      } else {
+        return promised_sleep 5;
+      }
+    };
+  } # sleeper
+}
 
 sub validate_name ($) {
   my $name = shift;
@@ -171,29 +178,31 @@ sub validate_name ($) {
   }
 
   sub generate_sorted_indexes_0 () {
+    print STDERR "\rSorting (0)...";
     {
       my $path1 = $DataPath->child ('indexes', 'entries.txt.orig');
       my $path2 = $DataPath->child ('indexes', 'entries.txt');
       `sort -u \Q$path1\E > \Q$path2\E`;
     }
-    {
-      my $path1 = $DataPath->child ('indexes', 'keywords.txt.orig');
-      my $path2 = $DataPath->child ('indexes', 'keywords.txt');
-      `sort -u \Q$path1\E > \Q$path2\E`;
-    }
+    #{
+    #  my $path1 = $DataPath->child ('indexes', 'keywords.txt.orig');
+    #  my $path2 = $DataPath->child ('indexes', 'keywords.txt');
+    #  `sort -u \Q$path1\E > \Q$path2\E`;
+    #}
     {
       my $path1 = $DataPath->child ('indexes', 'https.txt.orig');
       my $path2 = $DataPath->child ('indexes', 'https.txt');
       `sort -u \Q$path1\E > \Q$path2\E`;
     }
-    {
-      my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
-      my $path2 = $DataPath->child ('indexes', 'users.txt');
-      `sort -u \Q$path1\E > \Q$path2\E`;
-    }
+    #{
+    #  my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
+    #  my $path2 = $DataPath->child ('indexes', 'users.txt');
+    #  `sort -u \Q$path1\E > \Q$path2\E`;
+    #}
   } # generate_sorted_indexes_0
 
   sub generate_sorted_indexes () {
+    print STDERR "\rSorting...";
     {
       close_entry_index;
       my $path1 = $DataPath->child ('indexes', 'entries.txt.orig');
@@ -451,6 +460,21 @@ sub save_n_entries ($) {
   } $items;
 } # save_n_entries
 
+{
+  my $Clients = {};
+  sub client ($) {
+    my $tld = shift;
+    return $Clients->{$tld} ||= Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
+  } # client
+
+  sub close_clients () {
+    return Promise->all ([
+      map { (delete $Clients->{$_})->close } keys %$Clients
+    ]);
+  } # close_clients
+}
+
 sub get_h ($$%) {
   my ($type, $tld, %args) = @_;
   return Promise->resolve->then (sub {
@@ -464,36 +488,35 @@ sub get_h ($$%) {
     if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
       $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
     }
-    my $client = Web::Transport::BasicClient->new_from_url
-        (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
+    my $client = client $tld;
     my $page = 1;
-  return ((promised_until {
-    return with_retry (sub {
-      return $client->request (debug_req {
-        path => [
-          'api', 'statuses',
-          ($type eq 'user' ? ($type . '_timeline', $args{name} . '.json')
-                           : ($type . '_timeline.json')),
-        ],
-        params => {
-          body_formats => 'haiku',
-          count => 200,
-          page => $page,
-          ($type eq 'keyword' ? (word => $args{word}) : ()),
-          since => $since,
-        },
-      })->then (sub {
-        my $res = $_[0];
-        $sh->{all}->{'404'} = 1 if $res->status == 404;
-        return [] if $res->status == 404;
-        die $res unless $res->status == 200;
-        return json_bytes2perl $res->body_bytes;
-      });
-    }, $args{signal})->then (sub {
-      my $json = $_[0];
-      return 'done' if $args{signal}->aborted and not defined $json;
-      if (ref $json eq 'ARRAY') {
-        return 'done' unless @$json;
+    return ((promised_until {
+      return with_retry (sub {
+        return $client->request (debug_req {
+          path => [
+            'api', 'statuses',
+            ($type eq 'user' ? ($type . '_timeline', $args{name} . '.json')
+                             : ($type . '_timeline.json')),
+          ],
+          params => {
+            body_formats => 'haiku',
+            count => 200,
+            page => $page,
+            ($type eq 'keyword' ? (word => $args{word}) : ()),
+            since => $since,
+          },
+        })->then (sub {
+          my $res = $_[0];
+          $sh->{all}->{'404'} = 1 if $res->status == 404;
+          return [] if $res->status == 404;
+          die $res unless $res->status == 200;
+          return json_bytes2perl $res->body_bytes;
+        });
+      }, $args{signal})->then (sub {
+        my $json = $_[0];
+        return 'done' if $args{signal}->aborted and not defined $json;
+        if (ref $json eq 'ARRAY') {
+          return 'done' unless @$json;
 
         my $ts = Web::DateTime::Parser->parse_global_date_and_time_string
             ($json->[0]->{created_at});
@@ -516,16 +539,13 @@ sub get_h ($$%) {
       } else {
         die "Server returns an unexpected response";
       }
-    });
-  })->then (sub {
-    return 'done' if $args{signal}->aborted;
-    $state->{no_more_older} = 1;
-    $state->{can_have_more} = 1 if $page > 100;
-    return save_sh $sh;
-  })->finally (sub {
-    return $client->close;
-  }));
-
+      });
+    })->then (sub {
+      return 'done' if $args{signal}->aborted;
+      $state->{no_more_older} = 1;
+      $state->{can_have_more} = 1 if $page > 100;
+      return save_sh $sh;
+    }));
   });
 } # get_h
 
@@ -537,88 +557,87 @@ sub get_n ($%) {
     my $sh = $_[0];
     my $state = $sh->{state};
     return if $sh->{all}->{'404'};
-    return if $type eq 'user2' and $state->{no_more_newer};
+    return if $state->{no_more_newer};
     return if $type eq 'user2' and not $sh->{all}->{h_com}->{can_have_more};
-    my $client = Web::Transport::BasicClient->new_from_url
-        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
-  my $req = $type eq 'user' ? {
-    path => [$args{name}, 'index.json'],
-    params => {
-      per_page => 200,
-      order => 'asc',
-    },
-  } : $type eq 'user2' ? {
-    path => [$args{name}, 'index.json'],
-    params => {
-      location => q<http://h2.hatena.ne.jp/>,
-      dccol => 'ugouser',
-      per_page => 200,
-      order => 'asc',
-      reftime => '+1291161600,0', # 2010-12-01
-    },
-  } : $type eq 'public' ? {
-    path => ['index.json'],
-    params => {
-      per_page => 200,
-      order => 'asc',
-    },
-  } : die;
-  if (defined $state->{newer_url}) {
-    $req = {url => Web::URL->parse_string ($state->{newer_url})};
-  }
-  my $n = 0;
-  return ((promised_until {
-    my $time = time;
-    return with_retry (sub {
-      debug_req $req;
-      return $client->request (%$req)->then (sub {
-        my $res = $_[0];
-        $sh->{all}->{'404'} = 1 if $res->status == 404;
-        return {items => []} if $res->status == 404;
-        die $res unless $res->status == 200;
-        return json_bytes2perl $res->body_bytes;
-      });
-    }, $args{signal})->then (sub {
-      my $json = $_[0];
-      return 'done' if $args{signal}->aborted and not defined $json;
-      if (ref $json eq 'HASH') {
-        $state->{newer_url} = $json->{newer_url};
-        $state->{last_checked} = $time;
-        unless (@{$json->{items}}) {
-          $state->{no_more_newer} = 1 if $type eq 'user2';
-          return 'done';
-        }
-
-        return Promise->all ([
-          save_n_entries ($json->{items}),
-        ])->then (sub {
-          if ($DEBUG) {
-            my $ts = Web::DateTime->new_from_unix_time ($json->{items}->[-1]->{created_on});
-            print STDERR "\x0D" . $ts->to_global_date_and_time_string;
-          }
-          $Counts->{timestamp} = $json->{items}->[-1]->{created_on};
-          if ($type eq 'user2' and
-              $sh->{all}->{h_com}->{oldest_timestamp}< $Counts->{timestamp}) {
-            $state->{no_more_newer} = 1;
+    my $client = client 'jp';
+    my $req = $type eq 'user' ? {
+      path => [$args{name}, 'index.json'],
+      params => {
+        per_page => 200,
+        order => 'asc',
+      },
+    } : $type eq 'user2' ? {
+      path => [$args{name}, 'index.json'],
+      params => {
+        location => q<http://h2.hatena.ne.jp/>,
+        dccol => 'ugouser',
+        per_page => 200,
+        order => 'asc',
+        reftime => '+1291161600,0', # 2010-12-01
+      },
+    } : $type eq 'public' ? {
+      path => ['index.json'],
+      params => {
+        per_page => 200,
+        order => 'asc',
+      },
+    } : die;
+    if (defined $state->{newer_url}) {
+      $req = {url => Web::URL->parse_string ($state->{newer_url})};
+    }
+    my $n = 0;
+    return ((promised_until {
+      my $time = time;
+      return with_retry (sub {
+        debug_req $req;
+        return $client->request (%$req)->then (sub {
+          my $res = $_[0];
+          $sh->{all}->{'404'} = 1 if $res->status == 404;
+          return {items => []} if $res->status == 404;
+          die $res unless $res->status == 200;
+          return json_bytes2perl $res->body_bytes;
+        });
+      }, $args{signal})->then (sub {
+        my $json = $_[0];
+        return 'done' if $args{signal}->aborted and not defined $json;
+        if (ref $json eq 'HASH') {
+          $state->{newer_url} = $json->{newer_url};
+          $state->{last_checked} = $time;
+          unless (@{$json->{items}}) {
+            $state->{no_more_newer} = 1 if $type eq 'user2';
+            $state->{no_more_newer} = 1 if $type eq 'user' and $args{name} =~ /\@(?:facebook|twitter|mixi|DSi)$/;
             return 'done';
           }
-          return 'done' if $args{signal}->aborted;
-          $req = {
-            url => Web::URL->parse_string ($json->{newer_url}),
-          };
-          $n++;
-          return save ()->then (sub {
-            return not 'done';
+
+          return Promise->all ([
+            save_n_entries ($json->{items}),
+          ])->then (sub {
+            if ($DEBUG) {
+              my $ts = Web::DateTime->new_from_unix_time
+                  ($json->{items}->[-1]->{created_on});
+              print STDERR "\x0D" . $ts->to_global_date_and_time_string;
+            }
+            $Counts->{timestamp} = $json->{items}->[-1]->{created_on};
+            if ($type eq 'user2' and
+                $sh->{all}->{h_com}->{oldest_timestamp}< $Counts->{timestamp}) {
+              $state->{no_more_newer} = 1;
+              return 'done';
+            }
+            return 'done' if $args{signal}->aborted;
+            $req = {
+              url => Web::URL->parse_string ($json->{newer_url}),
+            };
+            $n++;
+            return save ()->then (sub {
+              return not 'done';
+            });
           });
-        });
-      } else {
-        die "Server returns an unexpected response";
-      }
-    });
+        } else {
+          die "Server returns an unexpected response";
+        }
+      });
     })->then (sub {
       return save_sh $sh;
-    })->finally (sub {
-      return $client->close;
     }));
   });
 } # get_n
@@ -633,12 +652,11 @@ sub get_users ($$%) {
     my $ts = $state->{$type . '_user_updated'};
     return if defined $ts;
     return if $sh->{all}->{'404'};
-    my $client = Web::Transport::BasicClient->new_from_url
-        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+    my $client = client 'jp';
     my $page = 1;
-  return ((promised_until {
-    return with_retry (sub {
-      return $client->request (debug_req {
+    return ((promised_until {
+      return with_retry (sub {
+        return $client->request (debug_req {
         path => [
           'api', 'statuses',
           ({
@@ -677,14 +695,11 @@ sub get_users ($$%) {
         die "Server returns an unexpected response";
       }
     });
-  })->then (sub {
-    return if $args{signal}->aborted;
-    $state->{$type . '_user_updated'} = time;
-    return save_sh $sh;
-  })->then (sub {
-    return $client->close;
-  }));
-
+    })->then (sub {
+      return if $args{signal}->aborted;
+      $state->{$type . '_user_updated'} = time;
+      return save_sh $sh;
+    }));
   });
 } # get_users
 
@@ -698,33 +713,32 @@ sub get_favorite_keywords (%) {
     my $ts = $state->{favorite_keyword_updated};
     return if defined $ts;
     return if $sh->{all}->{'404'};
-    my $client = Web::Transport::BasicClient->new_from_url
-        (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+    my $client = client 'jp';
     my $page = 1;
     my $prev_count = 0;
-  return ((promised_until {
-    return with_retry (sub {
-      return $client->request (debug_req {
-        path => [
-          'api', 'statuses',
-          'keywords',
-          $args{name} . '.json'
-        ],
-        params => {
-          page => $page,
-        },
-      })->then (sub {
-        my $res = $_[0];
-        $sh->{all}->{'404'} = 1 if $res->status == 404;
-        return [] if $res->status == 404;
-        die $res unless $res->status == 200;
-        return json_bytes2perl $res->body_bytes;
-      });
-    }, $args{signal})->then (sub {
-      my $json = $_[0];
-      return 'done' if $args{signal}->aborted and not defined $json;
-      if (ref $json eq 'ARRAY') {
-        return 'done' unless @$json;
+    return ((promised_until {
+      return with_retry (sub {
+        return $client->request (debug_req {
+          path => [
+            'api', 'statuses',
+            'keywords',
+            $args{name} . '.json'
+          ],
+          params => {
+            page => $page,
+          },
+        })->then (sub {
+          my $res = $_[0];
+          $sh->{all}->{'404'} = 1 if $res->status == 404;
+          return [] if $res->status == 404;
+          die $res unless $res->status == 200;
+          return json_bytes2perl $res->body_bytes;
+        });
+      }, $args{signal})->then (sub {
+        my $json = $_[0];
+        return 'done' if $args{signal}->aborted and not defined $json;
+        if (ref $json eq 'ARRAY') {
+          return 'done' unless @$json;
 
           for my $item (@$json) {
             $sh->{graphs}->{favorite_keyword}->{$item->{word}} = 1;
@@ -748,16 +762,13 @@ sub get_favorite_keywords (%) {
       return if $args{signal}->aborted;
       $state->{favorite_keyword_updated} = time;
       return save_sh $sh;
-    })->then (sub {
-      return $client->close;
     }));
   });
 } # get_favorite_keywords
 
 sub get_entry ($$$) {
   my ($tld, $eid, $signal) = @_;
-  my $client = Web::Transport::BasicClient->new_from_url
-      (Web::URL->parse_string ("http://h.hatena.ne.jp"));
+  my $client = client 'jp';
   return ((promised_until {
     return with_retry (sub {
       return $client->request (debug_req {
@@ -786,8 +797,6 @@ sub get_entry ($$$) {
         die "Server returns an unexpected response";
       }
     });
-  })->finally (sub {
-    return $client->close;
   }));
 } # get_entry
 
@@ -797,6 +806,7 @@ sub run_resolve_https ($) {
 
   my $known = {};
   {
+    print STDERR "\rReading \@http list...";
     my $known_txt_path = $DataPath->child ('indexes', 'https.txt');
     if (-f $known_txt_path) {
       my $file = $known_txt_path->openr;
@@ -809,21 +819,27 @@ sub run_resolve_https ($) {
   }
 
   return Promise->resolve->then (sub {
+    print STDERR "\rReading entry list for \@http...";
     my $entries_txt_path = $DataPath->child ('indexes', 'entries.txt');
     my $file = $entries_txt_path->openr;
     return promised_until {
-      my $line = <$file>;
-      return 'done' if not defined $line;
-      return 'done' if $signal->aborted;
-      if ($line =~ m{^[0-9]+ (jp|com)/[^/]+/([0-9]+) ([0-9]+\@http) }) {
-        return not 'done' if $known->{$3};
-        my $url_name = $3;
-        
-        return get_entry ($1, $2, $signal)->then (sub {
-          $known->{$url_name} = 1;
-          return not 'done';
-        });
-      }
+      while (1) {
+        my $line = <$file>;
+        return 'done' if not defined $line;
+        return 'done' if $signal->aborted;
+        if ($line =~ m{^([0-9]+) (jp|com)/[^/]+/([0-9]+) ([0-9]+\@http) }) {
+          $Counts->{timestamp} = $1;
+          return not 'done' if $known->{$4};
+          my $url_name = $4;
+
+          printf STDERR "\r\@http: %s",
+              scalar gmtime $1;
+          return get_entry ($2, $3, $signal)->then (sub {
+            $known->{$url_name} = 1;
+            return not 'done';
+          });
+        }
+      } # while
     }
   });
 } # run_resolve_https
@@ -848,8 +864,10 @@ sub run ($$) {
   return load->then (sub {
     return $code->();
   })->then (sub {
+    return if $signal->aborted;
     return save;
   })->then (sub {
+    return if $signal->aborted;
     return generate_sorted_indexes_0;
   })->then (sub {
     return run_resolve_https ($signal);
@@ -861,6 +879,8 @@ sub run ($$) {
     my $end = time;
     warn sprintf "\nElapsed: %ds\n", $end - $start;
     reset_count;
+  })->finally (sub {
+    return close_clients;
   })->to_cv->recv;
 } # run
 
@@ -926,7 +946,7 @@ sub antenna ($$) {
         return if $signal->aborted;
         my $name = shift;
         print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, 0+@$names;
-        return user ($name, $signal)->then (sleeper $n, $signal);
+        return user ($name, $signal)->then (sleeper $signal);
       } $names;
     })->then (sub {
       return if $signal->aborted;
@@ -936,7 +956,7 @@ sub antenna ($$) {
         return if $signal->aborted;
         my $word = shift;
         print STDERR sprintf "\x0D%s\x0DKeyword %d/%d ", " " x 20, ++$n, 0+@$words;
-        return keyword ($word, $signal)->then (sleeper $n, $signal);
+        return keyword ($word, $signal)->then (sleeper $signal);
       } $words;
     });
   });
@@ -976,7 +996,7 @@ sub auto ($) {
       if ($line =~ m{^([0-9A-Za-z\@_-]+)$}) {
         my $url_name = $1;
         print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
-        return user ($url_name, $signal)->then (sleeper $n, $signal);
+        return user ($url_name, $signal)->then (sleeper $signal);
       }
     };
   });
