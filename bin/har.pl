@@ -486,13 +486,21 @@ sub get_h ($$%) {
     my $sh = $_[0];
     my $state = $sh->{state};
     my $since;
-    return if $tld eq 'com' and $state->{no_more_older};
     return if $sh->{all}->{'404'};
-    if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
-      $since = Web::DateTime->new_from_unix_time ($state->{latest_timestamp})->to_http_date_string;
+    my $page = 1;
+    if ($tld eq 'com' and $state->{no_more_older}) {
+      if ($state->{can_have_more} and $state->{can_have_more} == 1) {
+        $page = 101;
+      } else {
+        return;
+      }
+    } else {
+      if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
+        $since = Web::DateTime->new_from_unix_time
+            ($state->{latest_timestamp})->to_http_date_string;
+      }
     }
     my $client = client $tld;
-    my $page = 1;
     return ((promised_until {
       return with_retry (sub {
         return $client->request (debug_req {
@@ -521,32 +529,35 @@ sub get_h ($$%) {
         if (ref $json eq 'ARRAY') {
           return 'done' unless @$json;
 
-        my $ts = Web::DateTime::Parser->parse_global_date_and_time_string
-            ($json->[0]->{created_at});
-        $state->{latest_timestamp} = $ts->to_unix_number
-            if not defined $state->{latest_timestamp} or
-               $state->{latest_timestamp} < $ts->to_unix_number;
-        $state->{oldest_timestamp} = $ts->to_unix_number
-            if not defined $state->{oldest_timestamp} or
-               $ts->to_unix_number < $state->{oldest_timestamp};
+          my $ts0 = Web::DateTime::Parser->parse_global_date_and_time_string
+              ($json->[0]->{created_at});
+          $state->{latest_timestamp} = $ts0->to_unix_number
+              if not defined $state->{latest_timestamp} or
+                 $state->{latest_timestamp} < $ts0->to_unix_number;
+          my $ts1 = Web::DateTime::Parser->parse_global_date_and_time_string
+              ($json->[-1]->{created_at});
+          $state->{oldest_timestamp} = $ts1->to_unix_number
+              if not defined $state->{oldest_timestamp} or
+                 $ts1->to_unix_number < $state->{oldest_timestamp};
+          $Counts->{timestamp} = $ts1->to_unix_number;
 
-        $_->{tld} = $tld for @$json;
-        return Promise->all ([
-          save_h_entries ($json),
-        ])->then (sub {
-          return 'done' if $page++ > 100;
-          print STDERR "*";
-          return 'done' if $args{signal}->aborted;
-          return not 'done';
-        });
-      } else {
-        die "Server returns an unexpected response";
-      }
+          $_->{tld} = $tld for @$json;
+          return Promise->all ([
+            save_h_entries ($json),
+          ])->then (sub {
+            return 'done' if $page++ > 200;
+            print STDERR "*";
+            return 'done' if $args{signal}->aborted;
+            return not 'done';
+          });
+        } else {
+          die "Server returns an unexpected response";
+        }
       });
     })->then (sub {
       return 'done' if $args{signal}->aborted;
       $state->{no_more_older} = 1;
-      $state->{can_have_more} = 1 if $page > 100;
+      $state->{can_have_more} = 200 if $page > 200;
       return save_sh $sh;
     }));
   });
