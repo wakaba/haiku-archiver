@@ -1,0 +1,5 @@
+{
+  "circleci": {
+    "docker-build": "wakaba/haiku-archiver"
+  }
+}
