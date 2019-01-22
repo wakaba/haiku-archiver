@@ -15,7 +15,7 @@ deps: git-submodules pmbp-install
 
 deps-docker: pmbp-install
 	perl local/bin/pmbp.pl $(PMBP_OPTIONS) \
-	    --create-perl-command-shortcut perl\ bin/har.pl=har
+	    --create-perl-command-shortcut har=perl\ bin/har.pl
 
 git-submodules:
 	$(GIT) submodule update --init
