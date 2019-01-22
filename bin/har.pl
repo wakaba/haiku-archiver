@@ -71,10 +71,10 @@ sub debug_req ($) {
       return if $signal->aborted;
       return if $PrevTryCount == $TryCount;
       $PrevTryCount = $TryCount;
-      if (($TryCount % 20) == 0) {
+      if (($TryCount % 1000) == 0) {
         warn "Sleep (75)\n" if $DEBUG;
         return promised_sleep 75;
-      } elsif (($TryCount % 10) == 0) {
+      } elsif (($TryCount % 100) == 0) {
         warn "Sleep (25)\n" if $DEBUG;
         return promised_sleep 25;
       } else {
@@ -176,6 +176,15 @@ sub validate_name ($) {
 
     sub close_entry_index () { close $file }
   }
+  
+  sub generate_sorted_indexes_u () {
+    print STDERR "\rSorting (u)...";
+    {
+      my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
+      my $path2 = $DataPath->child ('indexes', 'users.txt');
+      `sort -u \Q$path1\E > \Q$path2\E`;
+    }
+  } # generate_sorted_indexes_u
 
   sub generate_sorted_indexes_0 () {
     print STDERR "\rSorting (0)...";
@@ -194,11 +203,7 @@ sub validate_name ($) {
       my $path2 = $DataPath->child ('indexes', 'https.txt');
       `sort -u \Q$path1\E > \Q$path2\E`;
     }
-    #{
-    #  my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
-    #  my $path2 = $DataPath->child ('indexes', 'users.txt');
-    #  `sort -u \Q$path1\E > \Q$path2\E`;
-    #}
+    #generate_sorted_indexes_u;
   } # generate_sorted_indexes_0
 
   sub generate_sorted_indexes () {
@@ -223,9 +228,7 @@ sub validate_name ($) {
     }
     {
       close_user_index;
-      my $path1 = $DataPath->child ('indexes', 'users.txt.orig');
-      my $path2 = $DataPath->child ('indexes', 'users.txt');
-      `sort -u \Q$path1\E > \Q$path2\E`;
+      generate_sorted_indexes_u;
     }
   } # generate_sorted_indexes
 }
@@ -559,6 +562,12 @@ sub get_n ($%) {
     return if $sh->{all}->{'404'};
     return if $state->{no_more_newer};
     return if $type eq 'user2' and not $sh->{all}->{h_com}->{can_have_more};
+    return if $args{skip_recently_checked} and
+        defined $state->{last_checked} and
+        $state->{last_checked} > time - 10*24*60*60;
+    return if $args{skip_not_active} and
+        defined $state->{latest_timestamp} and
+        $state->{latest_timestamp} + 100*24*60*60 < time;
     my $client = client 'jp';
     my $req = $type eq 'user' ? {
       path => [$args{name}, 'index.json'],
@@ -586,8 +595,9 @@ sub get_n ($%) {
       $req = {url => Web::URL->parse_string ($state->{newer_url})};
     }
     my $n = 0;
+    my $time = time;
     return ((promised_until {
-      my $time = time;
+      $time = time;
       return with_retry (sub {
         debug_req $req;
         return $client->request (%$req)->then (sub {
@@ -602,7 +612,6 @@ sub get_n ($%) {
         return 'done' if $args{signal}->aborted and not defined $json;
         if (ref $json eq 'HASH') {
           $state->{newer_url} = $json->{newer_url};
-          $state->{last_checked} = $time;
           unless (@{$json->{items}}) {
             $state->{no_more_newer} = 1 if $type eq 'user2';
             $state->{no_more_newer} = 1 if $type eq 'user' and $args{name} =~ /\@(?:facebook|twitter|mixi|DSi)$/;
@@ -618,8 +627,12 @@ sub get_n ($%) {
               print STDERR "\x0D" . $ts->to_global_date_and_time_string;
             }
             $Counts->{timestamp} = $json->{items}->[-1]->{created_on};
+            if (not defined $state->{latest_timestamp} or
+                $state->{latest_timestamp} < $json->{items}->[0]->{created_on}) {
+              $state->{latest_timestamp} = $json->{items}->[0]->{created_on};
+            }
             if ($type eq 'user2' and
-                $sh->{all}->{h_com}->{oldest_timestamp}< $Counts->{timestamp}) {
+                $sh->{all}->{h_com}->{oldest_timestamp} < $Counts->{timestamp}) {
               $state->{no_more_newer} = 1;
               return 'done';
             }
@@ -637,6 +650,7 @@ sub get_n ($%) {
         }
       });
     })->then (sub {
+      $state->{last_checked} = $time unless $args{signal}->aborted;
       return save_sh $sh;
     }));
   });
@@ -884,8 +898,8 @@ sub run ($$) {
   })->to_cv->recv;
 } # run
 
-sub user ($$) {
-  my ($name, $signal) = @_;
+sub user ($$;%) {
+  my ($name, $signal, %args) = @_;
   return Promise->resolve->then (sub {
     return if $signal->aborted;
     return get_users ('favorite', name => $name, signal => $signal);
@@ -900,7 +914,9 @@ sub user ($$) {
     return save;
   })->then (sub {
     return if $signal->aborted;
-    return get_n ('user', name => $name, signal => $signal);
+    return get_n ('user', name => $name, signal => $signal,
+                  skip_recently_checked => $args{skip_some},
+                  skip_not_active => $args{skip_some});
   })->then (sub {
     return if $signal->aborted;
     return get_h ('user', 'com', name => $name, signal => $signal);
@@ -982,23 +998,38 @@ sub auto ($) {
   })->then (sub {
     return if $signal->aborted;
     my $users_txt_path = $DataPath->child ('indexes', 'users.txt');
-    my $n = 0;
     my $all = 0;
     {
       my $file = $users_txt_path->openr;
       $all++ while <$file>;
     }
-    my $file = $users_txt_path->openr;
-    return promised_until {
-      my $line = <$file>;
-      return 'done' if not defined $line;
-      return 'done' if $signal->aborted;
-      if ($line =~ m{^([0-9A-Za-z\@_-]+)$}) {
-        my $url_name = $1;
-        print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, $all;
-        return user ($url_name, $signal)->then (sleeper $signal);
-      }
-    };
+    my $run = sub {
+      my $phase = shift;
+      return if $signal->aborted;
+      my $n = 0;
+      my $file = $users_txt_path->openr;
+      return promised_until {
+        my $line = <$file>;
+        return 'done' if not defined $line;
+        return 'done' if $signal->aborted;
+        if ($line =~ m{^([0-9A-Za-z\@_-]+)$}) {
+          my $url_name = $1;
+          print STDERR sprintf "\x0D%s\x0D[$phase] User %d/%d ",
+              " " x 20, ++$n, $all;
+          return user ($url_name, $signal,
+                       skip_some => ($phase == 1 or $phase == 2))->then (sleeper $signal);
+        }
+      };
+    }; # $run
+    return promised_for {
+      return if $signal->aborted;
+      my $phase = shift;
+      return Promise->resolve->then (sub {
+        generate_sorted_indexes_u;
+      })->then (sub {
+        return $run->($phase);
+      });
+    } [1, 2, 3];
   });
 } # auto
 
