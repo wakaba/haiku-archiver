@@ -489,11 +489,7 @@ sub get_h ($$%) {
     return if $sh->{all}->{'404'};
     my $page = 1;
     if ($tld eq 'com' and $state->{no_more_older}) {
-      if ($state->{can_have_more} and $state->{can_have_more} == 1) {
-        $page = 101;
-      } else {
-        return;
-      }
+      return;
     } else {
       if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
         $since = Web::DateTime->new_from_unix_time
