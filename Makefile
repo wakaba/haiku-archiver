@@ -20,6 +20,7 @@ deps-docker: pmbp-install
 
 git-submodules:
 	$(GIT) submodule update --init
+	$(GIT) rev-parse HEAD > rev
 
 PMBP_OPTIONS=
 

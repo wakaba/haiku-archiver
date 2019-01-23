@@ -1077,8 +1077,7 @@ sub main (@) {
       return auto ($signal);
     }, $signal);
   } elsif ($command eq 'version') {
-    print `git rev-parse HEAD`;
-    print "\n";
+    print path (__FILE__)->parent->parent->child ('rev')->slurp, "\n";
   } else {
     die "Usage: har command\n";
   }
