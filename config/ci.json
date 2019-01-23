@@ -1,5 +1,8 @@
 {
   "circleci": {
+    "build": [
+      "make deps-circleci"
+    ],
     "docker-build": "wakaba/haiku-archiver"
   }
 }

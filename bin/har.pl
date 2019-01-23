@@ -1076,6 +1076,9 @@ sub main (@) {
     run (sub {
       return auto ($signal);
     }, $signal);
+  } elsif ($command eq 'version') {
+    print `git rev-parse HEAD`;
+    print "\n";
   } else {
     die "Usage: har command\n";
   }

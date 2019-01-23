@@ -16,6 +16,11 @@
             },
             {
                "run" : {
+                  "command" : "make deps-circleci"
+               }
+            },
+            {
+               "run" : {
                   "command" : "docker info"
                }
             },

@@ -13,6 +13,7 @@ ciconfig:
 
 deps: git-submodules pmbp-install
 
+deps-circleci: git-submodules
 deps-docker: pmbp-install
 	perl local/bin/pmbp.pl $(PMBP_OPTIONS) \
 	    --create-perl-command-shortcut har=perl\ bin/har.pl

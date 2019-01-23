@@ -2,7 +2,7 @@ AnyEvent::Socket
 Carp~1.50
 Cwd~3.75
 Digest::SHA~6.02
-Encode~2.98
+Encode~2.99
 File::Path~2.16
 MIME::Base64~3.15
 Math::BigInt~1.999816
