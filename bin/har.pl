@@ -905,6 +905,20 @@ sub run ($$) {
   })->to_cv->recv;
 } # run
 
+sub keyword ($$) {
+  my ($word, $signal) = @_;
+  return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
+    return if $signal->aborted;
+    return save;
+  })->then (sub {
+    return if $signal->aborted;
+    return get_h ('keyword', 'com', word => $word, signal => $signal);
+  })->then (sub {
+    return if $signal->aborted;
+    return save;
+  });
+} # keyword
+
 sub user ($$;%) {
   my ($name, $signal, %args) = @_;
   return Promise->resolve->then (sub {
@@ -933,29 +947,17 @@ sub user ($$;%) {
   })->then (sub {
     return if $signal->aborted;
     return save;
+  })->then (sub {
+    return if $signal->aborted;
+    return keyword ('id:'.$name, $signal) if $args{with_keyword};
   });
-  #return get_h ('user', 'jp', name => $name, signal => $signal)->then (sub {
 } # user
-
-sub keyword ($$) {
-  my ($word, $signal) = @_;
-  return get_h ('keyword', 'jp', word => $word, signal => $signal)->then (sub {
-    return if $signal->aborted;
-    return save;
-  })->then (sub {
-    return if $signal->aborted;
-    return get_h ('keyword', 'com', word => $word, signal => $signal);
-  })->then (sub {
-    return if $signal->aborted;
-    return save;
-  });
-} # keyword
 
 sub antenna ($$) {
   my ($name, $signal) = @_;
   return Promise->resolve->then (sub {
     return if $signal->aborted;
-    return user ($name, $signal);
+    return user ($name, $signal, with_keyword => 1);
   })->then (sub {
     return if $signal->aborted;
     return state_graph 'user', name => $name;
@@ -969,7 +971,7 @@ sub antenna ($$) {
         return if $signal->aborted;
         my $name = shift;
         print STDERR sprintf "\x0D%s\x0DUser %d/%d ", " " x 20, ++$n, 0+@$names;
-        return user ($name, $signal)->then (sleeper $signal);
+        return user ($name, $signal, with_keyword => 1)->then (sleeper $signal);
       } $names;
     })->then (sub {
       return if $signal->aborted;
@@ -1077,7 +1079,7 @@ sub main (@) {
       return auto ($signal);
     }, $signal);
   } elsif ($command eq 'version') {
-    print path (__FILE__)->parent->parent->child ('rev')->slurp, "\n";
+    print path (__FILE__)->parent->parent->child ('rev')->slurp;
   } else {
     die "Usage: har command\n";
   }
