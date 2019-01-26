@@ -27,6 +27,8 @@ Docker Hub: <https://hub.docker.com/r/wakaba/haiku-archiver>
   {har} keyword {word}
 
     {word} はキーワード名。指定されたキーワードへの投稿を取得します。
+    {word} に id:{user} と指定するとユーザー [user} のIDキーワード
+    への投稿を取得できます。
 
   {har} antenna {user}
 
@@ -51,11 +53,11 @@ Ctrl + C で中断できます。進行中の処理が済み次第、できる�
 本ソフトウェアは同時起動に対応していません。複数同時に実行すると
 データを破損するおそれがあります。
 
-  例:
+例:
 
-    $ docker run -it -v /path/to/har/data:/app/data wakaba/haiku-archiver har user hatenahaiku
+  $ docker run -it -v /path/to/har/data:/app/data wakaba/haiku-archiver har user hatenahaiku
 
-  ... で id:hatenahaiku の投稿を取得して /path/to/har/data に保存します。
+... で id:hatenahaiku の投稿を取得して /path/to/har/data に保存します。
 
 * データ
 
@@ -83,10 +85,10 @@ Ctrl + C で中断できます。進行中の処理が済み次第、できる�
         "favorite_keyword": {"{word}":1, "{word}":2, ...}
       }
 
-    favorite_user はお気に入りユーザー、 fan_user はファン (お気に入られ)、
-    favorite_keyword はお気に入りキーワードを表しています。 {user} は
-    相手のユーザー名、 {word} は相手のキーワード名 (asin: や http: のこと
-    もあります。) です。
+    favorite_user はお気に入りユーザー、 fan_user はファン (お気に入られ
+    ユーザー)、favorite_keyword はお気に入りキーワードを表しています。
+    {user} は相手のユーザー名、 {word} は相手のキーワード名 (asin: や
+    http: のこともあります。) です。
 
   {data}/indexes/entries.txt
 
@@ -138,6 +140,8 @@ Ctrl + C で中断できます。進行中の処理が済み次第、できる�
 - 取得するデータ次第で、かなり時間がかかります。
 - 取得するデータ次第で、かなりのファイルサイズとファイル数になります。
 - サーバー側の制約のため、すべての投稿を取得できない可能性があります。
+  (例えば har keyword {word} を実行しても、投稿数が多いキーワードの
+  古い投稿を取得できません。)
 - サーバー側で既に削除されているデータは取得できません。
 - はてなフォトライフの画像やはてなスターの情報は取得しません。
 - 本ソフトウェアで取得したデータは、著作権法その他の法令に従い適切に
