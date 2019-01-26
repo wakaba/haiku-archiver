@@ -470,6 +470,12 @@ sub save_n_entries ($) {
     return $Clients->{$tld} ||= Web::Transport::BasicClient->new_from_url
         (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
   } # client
+  sub new_client ($) {
+    my $tld = shift;
+    $Clients->{$tld}->close if defined $Clients->{$tld};
+    return $Clients->{$tld} = Web::Transport::BasicClient->new_from_url
+        (Web::URL->parse_string ($tld eq 'com' ? 'http://h.hatena.com' : "http://h.hatena.ne.jp"));
+  } # new_client
 
   sub close_clients () {
     return Promise->all ([
@@ -517,8 +523,7 @@ sub get_h ($$%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
           if ($res->status != 200) {
-            $client->close;
-            $client = client $tld;
+            $client = new_client $tld;
           }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
@@ -616,8 +621,7 @@ sub get_n ($%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return {items => []} if $res->status == 404;
           if ($res->status != 200) {
-            $client->close;
-            $client = client 'jp';
+            $client = new_client 'jp';
           }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
@@ -702,8 +706,7 @@ sub get_users ($$%) {
         $sh->{all}->{'404'} = 1 if $res->status == 404;
         return [] if $res->status == 404;
         if ($res->status != 200) {
-          $client->close;
-          $client = client 'jp';
+          $client = new_client 'jp';
         }
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
@@ -765,8 +768,7 @@ sub get_favorite_keywords (%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
           if ($res->status != 200) {
-            $client->close;
-            $client = client 'jp';
+            $client = new_client 'jp';
           }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
@@ -817,8 +819,7 @@ sub get_entry ($$$) {
         my $res = $_[0];
         return undef if $res->status == 404;
         if ($res->status != 200) {
-          $client->close;
-          $client = client 'jp';
+          $client = new_client 'jp';
         }
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
