@@ -27,7 +27,7 @@ Docker Hub: <https://hub.docker.com/r/wakaba/haiku-archiver>
   {har} keyword {word}
 
     {word} はキーワード名。指定されたキーワードへの投稿を取得します。
-    {word} に id:{user} と指定するとユーザー [user} のIDキーワード
+    {word} に id:{user} と指定するとユーザー {user} のIDキーワード
     への投稿を取得できます。
 
   {har} antenna {user}
