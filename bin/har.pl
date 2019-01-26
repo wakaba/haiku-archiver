@@ -516,6 +516,10 @@ sub get_h ($$%) {
           my $res = $_[0];
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
+          if ($res->status != 200) {
+            $client->close;
+            $client = client $tld;
+          }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
         });
@@ -611,6 +615,10 @@ sub get_n ($%) {
           my $res = $_[0];
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return {items => []} if $res->status == 404;
+          if ($res->status != 200) {
+            $client->close;
+            $client = client 'jp';
+          }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
         });
@@ -693,6 +701,10 @@ sub get_users ($$%) {
         my $res = $_[0];
         $sh->{all}->{'404'} = 1 if $res->status == 404;
         return [] if $res->status == 404;
+        if ($res->status != 200) {
+          $client->close;
+          $client = client 'jp';
+        }
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
@@ -752,6 +764,10 @@ sub get_favorite_keywords (%) {
           my $res = $_[0];
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
+          if ($res->status != 200) {
+            $client->close;
+            $client = client 'jp';
+          }
           die $res unless $res->status == 200;
           return json_bytes2perl $res->body_bytes;
         });
@@ -800,6 +816,10 @@ sub get_entry ($$$) {
       })->then (sub {
         my $res = $_[0];
         return undef if $res->status == 404;
+        if ($res->status != 200) {
+          $client->close;
+          $client = client 'jp';
+        }
         die $res unless $res->status == 200;
         return json_bytes2perl $res->body_bytes;
       });
