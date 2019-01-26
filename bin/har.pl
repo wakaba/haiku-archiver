@@ -59,7 +59,7 @@ sub debug_req ($) {
         warn "Failed ($e); retrying ($n)...\n";
         return not 'done';
       });
-    })->then (sub {
+    } interval => 30)->then (sub {
       return $return;
     }));
   } # with_retry

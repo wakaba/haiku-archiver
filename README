@@ -4,6 +4,9 @@ Haiku Archiver
 はてなハイク <http://h.hatena.ne.jp> の投稿を手元に保存するための
 ツールです。
 
+GitHub: <https://github.com/wakaba/haiku-archiver>
+Docker Hub: <https://hub.docker.com/r/wakaba/haiku-archiver>
+
 * 使い方
 
 以下、 {har} は Haiku Archiver コマンドを表します。 Docker を使う場合、
