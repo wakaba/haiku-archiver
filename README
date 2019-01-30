@@ -59,6 +59,10 @@ Ctrl + C で中断できます。進行中の処理が済み次第、できる�
 
 ... で id:hatenahaiku の投稿を取得して /path/to/har/data に保存します。
 
+最新版に更新するときは:
+
+  docker pull wakaba/haiku-archiver
+
 * データ
 
 {data} は取得データを保存するディレクトリーを表します。
