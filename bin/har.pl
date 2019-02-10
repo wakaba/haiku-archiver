@@ -143,6 +143,13 @@ sub validate_name ($) {
     if (defined $args{url_name}) {
       validate_name $args{url_name};
       if ($args{url_name} =~ m{\@(?:h)$}) {
+        if ($args{url_name} eq '9234293841040390341@h') {
+          ## <http://h.hatena.ne.jp/api/statuses/keywords/kk_solanet.json>
+          ## <http://h.hatena.ne.jp/api/statuses/keyword_timeline/id:kk_solanet@ustream%20.json>
+          $args{word} //= 'id:kk_solanet@ustream';
+          $args{title} //= 'id:kk_solanet@ustream';
+        }
+        
         my $word = $args{word} // $args{title};
         index_target_keyword word => $word, url_name => $args{url_name};
       } elsif ($args{url_name} =~ m{^(.+)\@(?:asin)$}) {
@@ -784,6 +791,11 @@ sub get_favorite_keywords (%) {
           return 'done' unless @$json;
 
           for my $item (@$json) {
+            if (($item->{url_name} // '') eq '9234293841040390341@h') {
+              ## <http://h.hatena.ne.jp/api/statuses/keywords/kk_solanet.json>
+              ## <http://h.hatena.ne.jp/api/statuses/keyword_timeline/id:kk_solanet@ustream%20.json>
+              $item->{word} //= 'id:kk_solanet@ustream';
+            }
             $sh->{graphs}->{favorite_keyword}->{$item->{word}} = 1;
           }
           return ((promised_for {
