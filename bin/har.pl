@@ -32,6 +32,9 @@ sub debug_req ($) {
   if ($DEBUG) {
     print STDERR "\r", $req->{url}->stringify if defined $req->{url};
     print STDERR "\r", join ("/", @{$req->{path}}) if defined $req->{path};
+    for (keys %{$req->{params} or {}}){
+      print STDERR encode_web_utf8 (' ' . $_ . "=" . $req->{params}->{$_});
+    }
   }
   return %$req;
 } # debug_req
@@ -498,15 +501,26 @@ sub get_h ($$%) {
   })->then (sub {
     my $sh = $_[0];
     my $state = $sh->{state};
+    my $ref;
     my $since;
     return if $sh->{all}->{'404'};
-    my $page = 1;
-    if ($tld eq 'com' and $state->{no_more_older}) {
+    if ($state->{ref_no_more_newer}) {
       return;
+    } elsif (defined $state->{ref_latest_timestamp}) {
+      $ref = '+' . $state->{ref_latest_timestamp} . ',1';
+    } elsif ($tld eq 'com' and $state->{no_more_older}) {
+      if ($state->{can_have_more}) {
+        $ref = '+0,0';
+      } else {
+        return;
+      }
     } else {
-      if ($state->{no_more_older} and defined $state->{latest_timestamp}) {
-        $since = Web::DateTime->new_from_unix_time
-            ($state->{latest_timestamp})->to_http_date_string;
+      if ($state->{can_have_more}) {
+        $ref = '+0,0';
+      } elsif ($state->{no_more_older} and defined $state->{latest_timestamp}) {
+        $ref = '+' . $state->{latest_timestamp} . ',1';
+      } else {
+        $ref = '+0,0';
       }
     }
     my $client = client $tld;
@@ -521,9 +535,8 @@ sub get_h ($$%) {
           params => {
             body_formats => 'haiku',
             count => 200,
-            page => $page,
             ($type eq 'keyword' ? (word => $args{word}) : ()),
-            since => $since,
+            reftime => $ref,
           },
         })->then (sub {
           my $res = $_[0];
@@ -540,25 +553,25 @@ sub get_h ($$%) {
         my $json = $_[0];
         return 'done' if $args{signal}->aborted and not defined $json;
         if (ref $json eq 'ARRAY') {
-          return 'done' unless @$json;
-
+          unless (@$json) {
+            $state->{ref_no_more_newer} = 1 if $tld eq 'com';
+            $state->{ref_no_more_newer} = 1 if $type eq 'user' and $args{name} =~ /\@(?:facebook|twitter|mixi|DSi)$/;
+            delete $state->{can_have_more};
+            return 'done';
+          }
+          
           my $ts0 = Web::DateTime::Parser->parse_global_date_and_time_string
               ($json->[0]->{created_at});
-          $state->{latest_timestamp} = $ts0->to_unix_number
-              if not defined $state->{latest_timestamp} or
-                 $state->{latest_timestamp} < $ts0->to_unix_number;
-          my $ts1 = Web::DateTime::Parser->parse_global_date_and_time_string
-              ($json->[-1]->{created_at});
-          $state->{oldest_timestamp} = $ts1->to_unix_number
-              if not defined $state->{oldest_timestamp} or
-                 $ts1->to_unix_number < $state->{oldest_timestamp};
-          $Counts->{timestamp} = $ts1->to_unix_number;
-
+          $state->{ref_latest_timestamp} = $ts0->to_unix_number
+              if not defined $state->{ref_latest_timestamp} or
+                 $state->{ref_latest_timestamp} < $ts0->to_unix_number;
+          $Counts->{timestamp} = $ts0->to_unix_number;
+          $ref = '+' . $ts0->to_unix_number . ',1';
+          
           $_->{tld} = $tld for @$json;
           return Promise->all ([
             save_h_entries ($json),
           ])->then (sub {
-            return 'done' if $page++ > 200;
             print STDERR "*";
             return 'done' if $args{signal}->aborted;
             return not 'done';
@@ -569,8 +582,6 @@ sub get_h ($$%) {
       });
     })->then (sub {
       return 'done' if $args{signal}->aborted;
-      $state->{no_more_older} = 1;
-      $state->{can_have_more} = 200 if $page > 200;
       return save_sh $sh;
     }));
   });
@@ -979,9 +990,9 @@ sub user ($$;%) {
     return if $signal->aborted;
     return get_h ('user', 'com', name => $name, signal => $signal);
   })->then (sub {
-    return if $signal->aborted;
-    return get_n ('user2', name => $name, signal => $signal);
-  })->then (sub {
+  #  return if $signal->aborted;
+  #  return get_n ('user2', name => $name, signal => $signal);
+  #})->then (sub {
     return if $signal->aborted;
     return save;
   })->then (sub {
@@ -1082,7 +1093,7 @@ sub auto ($) {
 sub main (@) {
   my $command = shift // '';
   my $ac = AbortController->new;
-  $SIG{INT} = $SIG{TERM} = sub {
+  local $SIG{INT} = local $SIG{TERM} = sub {
     warn "Terminating...\n";
     $ac->abort;
     delete $SIG{INT};
@@ -1120,7 +1131,6 @@ sub main (@) {
   } else {
     die "Usage: har command\n";
   }
-  undef $ac;
 } # main
 
 main (@ARGV);
