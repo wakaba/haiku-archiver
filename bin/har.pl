@@ -1,5 +1,6 @@
 use strict;
 use warnings;
+use Carp;
 use Path::Tiny;
 use AbortController;
 use AnyEvent;
@@ -89,7 +90,8 @@ sub debug_req ($) {
 
 sub validate_name ($) {
   my $name = shift;
-  die "Unexpected name |$name|" unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
+  die "Unexpected name |$name|", Carp::longmess
+      unless $name =~ m{\A[0-9A-Za-z\@_-]+\z};
 } # validate_name
 
 {
@@ -807,9 +809,17 @@ sub get_favorite_keywords (%) {
               ## <http://h.hatena.ne.jp/api/statuses/keyword_timeline/id:kk_solanet@ustream%20.json>
               $item->{word} //= 'id:kk_solanet@ustream';
             }
-            $sh->{graphs}->{favorite_keyword}->{$item->{word}} = 1;
+            $sh->{graphs}->{favorite_keyword}->{$item->{word}} = 1
+                if defined $item->{word};
           }
           return ((promised_for {
+            unless (defined $_[0]->{url_name}) {
+              $state->{has_broken_keyword}++;
+              ## <http://h.hatena.ne.jp/api/statuses/keywords/nano_001.json>
+              ## (has been broken since
+              ## <https://web.archive.org/web/20091107063850/http://h.hatena.ne.jp:80/nano_001/>)
+              return;
+            }
             return write_keyword $_[0]
           } $json)->then (sub {
             return 'done' if @$json != 100 and $prev_count == @$json;
