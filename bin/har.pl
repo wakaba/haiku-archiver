@@ -568,7 +568,9 @@ sub get_h ($$%) {
               if not defined $state->{ref_latest_timestamp} or
                  $state->{ref_latest_timestamp} < $ts0->to_unix_number;
           $Counts->{timestamp} = $ts0->to_unix_number;
-          $ref = '+' . $ts0->to_unix_number . ',1';
+          my $new_ref = '+' . $ts0->to_unix_number . ',1';
+          return 'done' if $new_ref eq $ref; # no newer
+          $ref = $new_ref;
           
           $_->{tld} = $tld for @$json;
           return Promise->all ([
