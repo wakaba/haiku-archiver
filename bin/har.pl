@@ -603,7 +603,7 @@ sub get_n ($%) {
     return if $type eq 'user2' and not $sh->{all}->{h_com}->{can_have_more};
     return if $args{skip_recently_checked} and
         defined $state->{last_checked} and
-        $state->{last_checked} > time - 10*24*60*60;
+        $state->{last_checked} > time - 30*24*60*60;
     return if $args{skip_not_active} and
         defined $state->{latest_timestamp} and
         $state->{latest_timestamp} + 100*24*60*60 < time;
