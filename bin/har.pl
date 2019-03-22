@@ -545,6 +545,7 @@ sub get_h ($$%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
           return [] if $res->status == 401 and defined $args{name} and $args{name} =~ m{^admin};
+          return [] if $res->status == 302 and defined $args{name} and $args{name} eq 'facebook';
           if ($res->status != 200) {
             $client = new_client $tld;
           }
@@ -644,6 +645,7 @@ sub get_n ($%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return {items => []} if $res->status == 404;
           return {items => []} if $res->status == 401 and $args{name} =~ m{^admin};
+          return {items => []} if $res->status == 302 and $args{name} eq 'facebook';
           if ($res->status != 200) {
             $client = new_client 'jp';
           }
@@ -730,6 +732,7 @@ sub get_users ($$%) {
         $sh->{all}->{'404'} = 1 if $res->status == 404;
         return [] if $res->status == 404;
         return [] if $res->status == 401 and $args{name} =~ m{^admin};
+        return [] if $res->status == 302 and $args{name} eq 'facebook';
         if ($res->status != 200) {
           $client = new_client 'jp';
         }
@@ -793,6 +796,7 @@ sub get_favorite_keywords (%) {
           $sh->{all}->{'404'} = 1 if $res->status == 404;
           return [] if $res->status == 404;
           return [] if $res->status == 401 and $args{name} =~ m{^admin};
+          return [] if $res->status == 302 and $args{name} eq 'facebook';
           if ($res->status != 200) {
             $client = new_client 'jp';
           }
